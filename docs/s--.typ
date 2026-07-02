@@ -256,5 +256,5 @@ $
 
 == Value Equality
 - Values of different types are always unequal.
-- Functions are equal if and only if they reside in the same address.
+- Functions are equal if and only if they originate from the same evaluation of a `fn` expression.
 // - Pairs are equal if and only if their first and second components are equal respectively.
