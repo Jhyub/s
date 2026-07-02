@@ -30,10 +30,10 @@
     // ..syntax_row("", $ | s$, "string"),
     ..syntax_row("", $ | x$, "identifier"),
     ..syntax_row("", $ | e mono("+") e | e mono("-") e | e mono("*") e | e mono("/") e | e mono("%") e$, "arithmetic expression"),
-    ..syntax_row("", $ | e mono("=") e | e mono("<") e | e mono("and") e | e mono("or") e | mono("not") e$, "boolean expression"),
-    ..syntax_row("", $ | e ; e$, "sequence"),
-    ..syntax_row("", $ | e mono(",") e$, "pair"),
-    ..syntax_row("", $ | e mono(".1") | e mono(".2")$, "pair deconstruction"),
+    ..syntax_row("", $ | e mono("=") e | e mono("<") e /*| e mono("and") e | e mono("or") e */| mono("not") e$, "boolean expression"),
+    // ..syntax_row("", $ | e ; e$, "sequence"),
+    // ..syntax_row("", $ | e mono(",") e$, "pair"),
+    // ..syntax_row("", $ | e mono(".1") | e mono(".2")$, "pair deconstruction"),
     ..syntax_row("", $ | mono("if") e mono("then") e mono("else") e$, "branch"),
     ..syntax_row("", $ | mono("fn (") x^*, mono(") => ") e$, "function"),
     ..syntax_row("", $ | e mono("(") x^*, mono(")")$, "call (by reference)"),
@@ -46,7 +46,7 @@ A program is a function.
 == Identifiers
 Alpha-numeric identifiers are `[a-zA-Z][a-zA-Z0-9_]*`.
 Identifiers are case sensitive: `z` and `Z` are different.
-The reserved words cannot be used as identifiers: `true`, `false`, `and`, `or`, `not`, `if`, `then`, `else`, `fn`, `let`, `in`.
+The reserved words cannot be used as identifiers: `true`, `false`, /*`and`, `or`,*/ `not`, `if`, `then`, `else`, `fn`, `let`, `in`.
 
 == Numbers
 Numbers are integers, optionally prefixed with `-`(for negative integers): `-?[0-9]+`.
@@ -63,19 +63,20 @@ Precedence can be overridden by parentheses.
 
 $
   {text("function calling")}_L,
-  \ {mono(".1"), mono(".2")}_L,
+//   \ {mono(".1"), mono(".2")}_L,
   \ {mono("not")}_R,
   \ {mono("*"), mono("/"), mono("%")}_L,
   \ {mono("+"), mono("-")}_L,
   \ {mono("="), mono("<")}_L,
-  \ {mono("and")}_L,
-  \ {mono("or")}_L,
+//   \ {mono("and")}_L,
+//   \ {mono("or")}_L,
   \ {mono("else")},
   \ {mono("then")},
-  \ {mono(";")}_L,
+//   \ {mono(";")}_L,
   \ {mono("in")},
-  \ {mono("=>")},
-  \ {mono(",")text("(for pairs)")}_R
+  \ {mono("=>")}
+//   \ {mono("=>")},
+//   \ {mono(",")text("(for pairs)")}_R
 $
 
 = Semantics
@@ -107,8 +108,8 @@ $
     ..sem_item_row($b$, $BB$, "booleans", false),
     ..sem_item_row($x$, $italic("Id")$, "identifiers", false),
     ..sem_item_row($l$, $italic("Addr")$, "addresses", false),
-    ..sem_item_row($v$, $italic("Val")$, $ZZ + BB + italic("Pair") + italic("Function")$, true),
-    ..sem_item_row($chevron.l v_1, v_2 chevron.r$, $italic("Pair")$, $italic("Val") times italic("Val")$, true),
+    ..sem_item_row($v$, $italic("Val")$, $ZZ + BB /*+ italic("Pair")*/ + italic("Function")$, true),
+    // ..sem_item_row($chevron.l v_1, v_2 chevron.r$, $italic("Pair")$, $italic("Val") times italic("Val")$, true),
     ..sem_item_row($sigma$, $italic("Env")$, $italic("Id") attach(->, t: "fin") italic("Addr")$, true),
     ..sem_item_row($M$, $italic("Mem")$, $italic("Addr") attach(->, t: "fin") italic("Val")$, true),
     ..sem_item_row($chevron.l X, e, sigma chevron.r$, $italic("Function")$, $(italic("Id list")) times italic("Expression") times italic("Env")$, true)
@@ -177,55 +178,55 @@ $
         $sigma, M_1 tack.r e_2 arrow.b.double n_2, M_2$,
         $sigma, M tack.r e_1 mono("<") e_2 arrow.b.double n_1 < n_2, M_2$,
     )),
-    prooftree(rule(
-        name: [AndL],
-        $sigma, M tack.r e_1 arrow.b.double t r u e, M_1$,
-        $sigma, M_1 tack.r e_2 arrow.b.double b_2, M_2$,
-        $sigma, M tack.r e_1 mono("and") e_2 arrow.b.double b_2, M_2$,
-    )),
-    prooftree(rule(
-        name: [AndS],
-        $sigma, M tack.r e_1 arrow.b.double f a l s e, M_1$,
-        $sigma, M tack.r e_1 mono("and") e_2 arrow.b.double f a l s e, M_1$,
-    )),
-    prooftree(rule(
-        name: [OrL],
-        $sigma, M tack.r e_1 arrow.b.double f a l s e, M_1$,
-        $sigma, M_1 tack.r e_2 arrow.b.double b_2, M_2$,
-        $sigma, M tack.r e_1 mono("or") e_2 arrow.b.double b_2, M_2$,
-    )),
-    prooftree(rule(
-        name: [OrS],
-        $sigma, M tack.r e_1 arrow.b.double t r u e, M_1$,
-        $sigma, M tack.r e_1 mono("or") e_2 arrow.b.double t r u e, M_1$,
-    )),
+    // prooftree(rule(
+    //     name: [AndL],
+    //     $sigma, M tack.r e_1 arrow.b.double t r u e, M_1$,
+    //     $sigma, M_1 tack.r e_2 arrow.b.double b_2, M_2$,
+    //     $sigma, M tack.r e_1 mono("and") e_2 arrow.b.double b_2, M_2$,
+    // )),
+    // prooftree(rule(
+    //     name: [AndS],
+    //     $sigma, M tack.r e_1 arrow.b.double f a l s e, M_1$,
+    //     $sigma, M tack.r e_1 mono("and") e_2 arrow.b.double f a l s e, M_1$,
+    // )),
+    // prooftree(rule(
+    //     name: [OrL],
+    //     $sigma, M tack.r e_1 arrow.b.double f a l s e, M_1$,
+    //     $sigma, M_1 tack.r e_2 arrow.b.double b_2, M_2$,
+    //     $sigma, M tack.r e_1 mono("or") e_2 arrow.b.double b_2, M_2$,
+    // )),
+    // prooftree(rule(
+    //     name: [OrS],
+    //     $sigma, M tack.r e_1 arrow.b.double t r u e, M_1$,
+    //     $sigma, M tack.r e_1 mono("or") e_2 arrow.b.double t r u e, M_1$,
+    // )),
     prooftree(rule(
         name: [Not],
         $sigma, M tack.r e arrow.b.double b, M_1$,
         $sigma, M tack.r mono("not") e arrow.b.double not b, M_1$,
     )),
-    prooftree(rule(
-        name: [Seq],
-        $sigma, M tack.r e_1 arrow.b.double v_1, M_1$,
-        $sigma, M_1 tack.r e_2 arrow.b.double v_2, M_2$,
-        $sigma, M tack.r e_1 ; e_2 arrow.b.double v_2, M_2$,
-    )),
-    prooftree(rule(
-        name: [Pair],
-        $sigma, M tack.r e_1 arrow.b.double v_1, M_1$,
-        $sigma, M_1 tack.r e_2 arrow.b.double v_2, M_2$,
-        $sigma, M tack.r e_1 mono(",") e_2 arrow.b.double chevron.l v_1, v_2 chevron.r, M_2$,
-    )),
-    prooftree(rule(
-        name: [Pair1],
-        $sigma, M tack.r e arrow.b.double chevron.l v_1, v_2 chevron.r, M_1$,
-        $sigma, M tack.r e mono(".1") arrow.b.double v_1, M_1$,
-    )),
-    prooftree(rule(
-        name: [Pair2],
-        $sigma, M tack.r e arrow.b.double chevron.l v_1, v_2 chevron.r, M_1$,
-        $sigma, M tack.r e mono(".2") arrow.b.double v_2, M_1$,
-    )),
+    // prooftree(rule(
+    //     name: [Seq],
+    //     $sigma, M tack.r e_1 arrow.b.double v_1, M_1$,
+    //     $sigma, M_1 tack.r e_2 arrow.b.double v_2, M_2$,
+    //     $sigma, M tack.r e_1 ; e_2 arrow.b.double v_2, M_2$,
+    // )),
+    // prooftree(rule(
+    //     name: [Pair],
+    //     $sigma, M tack.r e_1 arrow.b.double v_1, M_1$,
+    //     $sigma, M_1 tack.r e_2 arrow.b.double v_2, M_2$,
+    //     $sigma, M tack.r e_1 mono(",") e_2 arrow.b.double chevron.l v_1, v_2 chevron.r, M_2$,
+    // )),
+    // prooftree(rule(
+    //     name: [Pair1],
+    //     $sigma, M tack.r e arrow.b.double chevron.l v_1, v_2 chevron.r, M_1$,
+    //     $sigma, M tack.r e mono(".1") arrow.b.double v_1, M_1$,
+    // )),
+    // prooftree(rule(
+    //     name: [Pair2],
+    //     $sigma, M tack.r e arrow.b.double chevron.l v_1, v_2 chevron.r, M_1$,
+    //     $sigma, M tack.r e mono(".2") arrow.b.double v_2, M_1$,
+    // )),
     prooftree(rule(
         name: [IfT],
         $sigma, M tack.r e arrow.b.double t r u e, M_1$,
@@ -256,4 +257,4 @@ $
 == Value Equality
 - Values of different types are always unequal.
 - Functions are equal if and only if they reside in the same address.
-- Pairs are equal if and only if their first and second components are equal respectively.
+// - Pairs are equal if and only if their first and second components are equal respectively.
