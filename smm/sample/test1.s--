@@ -1,0 +1,3 @@
+fn (x, y, z) =>
+    let f := fn (x, y) => x + y in
+    if f(x, y) = 4 then z else 0

@@ -1,0 +1,4 @@
+(executable
+ (public_name smm)
+ (name main)
+ (libraries smm_))

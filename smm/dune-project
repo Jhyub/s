@@ -1,0 +1,21 @@
+(lang dune 3.21)
+(using menhir 3.0)
+
+(name smm)
+
+(generate_opam_files true)
+
+(source
+ (github Jhyub/s))
+
+(authors "Janghyub Seo <jhseo@ropas.snu.ac.kr>")
+
+(maintainers "Janghyub Seo <jhseo@ropas.snu.ac.kr>")
+
+(package
+ (name smm)
+ (synopsis "S-- interpreter")
+ (description "S-- interpreter")
+ (depends ocaml dune menhir))
+
+; See the complete stanza docs at https://dune.readthedocs.io/en/stable/reference/dune-project/index.html

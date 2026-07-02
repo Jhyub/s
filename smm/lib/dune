@@ -1,0 +1,10 @@
+(library
+ (name smm_))
+
+(ocamllex lexer)
+(menhir
+ (modules parser))
+
+ (alias
+  (name default)
+  (deps parser.conflicts))
