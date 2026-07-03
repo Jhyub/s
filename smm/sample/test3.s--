@@ -1,0 +1,5 @@
+fn (x, y, z, w) =>
+    let g := if w = 0 then fn (a) => a + y
+                      else fn (b) => b + z in
+    let p := 1 in
+    g(x) + g(x) + g(p)
