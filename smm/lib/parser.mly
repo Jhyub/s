@@ -12,8 +12,6 @@ exception ParsingError of string
 %token LP RP
 %token EOF
 
-// %right COMMA
-%nonassoc ARROW
 %nonassoc IN
 // %left SEMICOLON
 %nonassoc THEN
@@ -57,13 +55,10 @@ expr:
   // | expr PERIOD1 { Smm.Smm.PFST ($1) }
   // | expr PERIOD2 { Smm.Smm.PSND ($1) }
   | IF expr THEN expr ELSE expr { Smm.Smm.IF ($2, $4, $6) }
-  | FN LP vars RP ARROW expr { Smm.Smm.FN ($3, $6) }
-  | expr LP vars RP { Smm.Smm.CALL ($1, $3) }
+  | ID LP vars RP { Smm.Smm.CALL ($1, $3) }
   | LET ID COLONEQ expr IN expr { Smm.Smm.LET ($2, $4, $6) }
+  | LET FN ID LP vars RP ARROW expr IN expr { Smm.Smm.LETFN ($3, $5, $8, $10) }
   ;
-exprs:
-    separated_list(COMMA, expr) { $1 }
-	;
 vars:
     separated_list(COMMA, ID) { $1 }
 	;

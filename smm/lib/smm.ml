@@ -66,49 +66,48 @@ module Smm = struct
     (* | PFST of exp *)
     (* | PSND of exp *)
     | IF of exp * exp * exp (* if-then-else *)
-    | FN of id list * exp
-    | CALL of exp * id list
+    | CALL of id * id list
     | LET of id * exp * exp
+    | LETFN of id * id list * exp * exp
 
   type program = exp
-  type value = Num of int | Bool of bool (* | Pair of (value * value) *) | Function of (int * (id list) * exp * env)
+  type value = Num of int | Bool of bool (* | Pair of (value * value) *)
   and memory = value Mem.t
-  and env = (id, Loc.t) Env.t
-
-  let functionId = ref 0
-  let newFunctionId () =
-    functionId := !functionId + 1;
-    !functionId
+  and env = (id, entry) Env.t
+  and entry = Addr of Loc.t | Function of id list * exp * env
 
   let emptyMemory = Mem.empty
   let emptyEnv = Env.empty
 
   let value_int v =
     match v with Num n -> n | _ -> raise (Error "TypeError : not int")
-  
+
   let value_bool v =
     match v with Bool b -> b | _ -> raise (Error "TypeError: not bool")
 
   (* let value_pair v =
     match v with Pair p -> p | _ -> raise (Error "TypeError: not pair") *)
-  
-  let value_function v =
-    match v with Function f -> f | _ -> raise (Error "TypeError: not function")
+
+  let entry_addr entry =
+    match entry with Addr l -> l | Function _ -> raise (Error "TypeError: not a value")
+
+  let entry_function entry =
+    match entry with
+    | Function (params, body, cenv) -> (params, body, cenv)
+    | Addr _ -> raise (Error "TypeError: not a function")
 
   let eq v1 v2 =
     match v1, v2 with
     | Num n1, Num n2 -> n1 = n2
     | Bool b1, Bool b2 -> b1 = b2
-    | Function (fid1, _, _, _), Function (fid2, _, _, _) -> fid1 = fid2
     | _ -> false
-  
+
   let rec eval mem env e =
     match e with
     | NUM n -> (Num n, mem)
-    | FN (ids, body) -> (Function (newFunctionId (), ids, body, env), mem)
     | TRUE -> (Bool true, mem)
     | FALSE -> (Bool false, mem)
-    | VAR x -> (Mem.load mem (Env.lookup env x), mem)
+    | VAR x -> (Mem.load mem (entry_addr (Env.lookup env x)), mem)
     | ADD (e1, e2) ->
       let (v1, mem1) = eval mem env e1 in
       let (v2, mem2) = eval mem1 env e2 in
@@ -143,38 +142,30 @@ module Smm = struct
     | IF (e1, e2, e3) ->
       let (v, mem1) = eval mem env e1 in
       if value_bool v then eval mem1 env e2 else eval mem1 env e3
-    | CALL (e, ids) ->
-      let (f, mem1) = eval mem env e in
-      let locs = ids |> List.map (Env.lookup env) in
-      call_fn mem1 env f locs
+    | CALL (f, ids) ->
+      let (params, body, cenv) = entry_function (Env.lookup env f) in
+      let entries = ids |> List.map (Env.lookup env) in
+      let env' =
+        match List.combine params entries with
+        | bindings ->
+          List.fold_left (fun env' (param, entry) -> Env.bind env' param entry) cenv bindings
+        | exception Invalid_argument _ -> raise (Error "TypeError: wrong number of arguments")
+      in
+      eval mem env' body
     | LET (x, e1, e2) ->
       let (v1, mem1) = eval mem env e1 in
       let l, mem2 = Mem.alloc mem1 in
       let mem3 = Mem.store mem2 l v1 in
-      let env' = Env.bind env x l in
+      let env' = Env.bind env x (Addr l) in
       eval mem3 env' e2
-  and call_fn mem env f locs =
-    let (_, id's, body, env') = value_function f in
-    let env'' = List.combine id's locs |> List.fold_left (fun env'' (id', loc) -> Env.bind env'' id' loc) env' in
-    eval mem env'' body
+    | LETFN (f, params, body, e1) ->
+      let env' = Env.bind env f (Function (params, body, env)) in
+      eval mem env' e1
 
-  (* Memory, environment, function (interpreted program), and locations of arguments *)
-  type run_ctx = memory * env * value * (Loc.t list)
+  let run pgm = fst (eval emptyMemory emptyEnv pgm)
 
-  let build_run_ctx (mem, env, pgm) =
-    let v, mem' = eval mem env pgm in
-    let (_, ids, _, _) = value_function v in
-    let mem'', locs = List.fold_left (fun (mem', locs) id ->
-      let l, mem'' = Mem.alloc mem' in
-      (mem'', l :: locs)
-    ) (mem', []) ids in
-    (mem'', env, v, locs)
 
-  let run (ctx, args) =
-    let (mem, env, f, locs) = ctx in
-    let mem' = List.combine locs args |> List.fold_left (fun mem' (loc, arg) -> Mem.store mem' loc arg) mem in
-    call_fn mem' env f locs
-
+  (*
   type equality = Equal | IfBoth of (equality * equality) | IfEither of (equality * equality) | IfVar of id | Unknown
   and eq_val = Plain of equality | Closure of (equality * (id list * eq_val))
   and eq_env = (id, eq_val) Env.t
@@ -276,5 +267,6 @@ module Smm = struct
       | Closure (self, (ids', Closure (inner, innerc))) -> Closure (IfBoth (self, replace inner ids' ids), innerc)
       | Closure (self, (ids', Plain eq_val)) -> Plain (IfBoth (self, replace eq_val ids' ids))
       | Plain _ -> Plain (Unknown)
+  *)
 
 end

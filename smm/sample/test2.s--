@@ -1,5 +1,14 @@
-fn (x, y, z) =>
-    let g := fn (x) => x + y in
-    let r := fn (w) => w + z in
-    let p := 1 in
-    g(x) + g(x) + g(p)
+(* was:
+   fn (x, y, z) =>
+       let g := fn (x) => x + y in
+       let r := fn (w) => w + z in
+       let p := 1 in
+       g(x) + g(x) + g(p)
+   run with x=2, y=10, z=100 *)
+let x := 2 in
+let y := 10 in
+let z := 100 in
+let fn g(x) => x + y in
+let fn r(w) => w + z in
+let p := 1 in
+g(x) + g(x) + g(p)

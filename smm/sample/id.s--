@@ -1,1 +1,4 @@
-fn (x) => x
+(* was: fn (x) => x, run with x=42 *)
+let x := 42 in
+let fn id(x) => x in
+id(x)

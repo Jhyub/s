@@ -1,1 +1,5 @@
-fn (x, y) => x + y
+(* was: fn (x, y) => x + y, run with x=3, y=4 *)
+let x := 3 in
+let y := 4 in
+let fn add(x, y) => x + y in
+add(x, y)

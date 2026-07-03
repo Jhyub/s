@@ -1,1 +1,4 @@
-fn (x) => x / 2
+(* was: fn (x) => x / 2, run with x=10 *)
+let x := 10 in
+let fn div(x) => x / 2 in
+div(x)

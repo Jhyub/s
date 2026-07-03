@@ -1,1 +1,4 @@
-fn (x) => 1
+(* was: fn (x) => 1, run with x=5 *)
+let x := 5 in
+let fn const(x) => 1 in
+const(x)
