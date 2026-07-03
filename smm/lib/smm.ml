@@ -175,4 +175,106 @@ module Smm = struct
     let mem' = List.combine locs args |> List.fold_left (fun mem' (loc, arg) -> Mem.store mem' loc arg) mem in
     call_fn mem' env f locs
 
+  type equality = Equal | IfBoth of (equality * equality) | IfEither of (equality * equality) | IfVar of id | Unknown
+  and eq_val = Plain of equality | Closure of (equality * (id list * eq_val))
+  and eq_env = (id, eq_val) Env.t
+
+  let emptyEqEnv = Env.empty
+
+  (* Merging: think of an if-then-else, so we might have different paths *)
+  (* But we behave conservatively so we say equality if both of them are equal *)
+  let rec merge_eq_val e1 e2 =
+    match e1, e2 with
+    | Plain e1', Plain e2' | Closure (e1', _), Closure (e2', _) -> Plain (IfBoth (e1', e2')) (* TODO: We are erasing function information, how to handle? *)
+    | Plain ep, Closure (ec, ec') | Closure (ec, ec'), Plain ep -> (* It 'might' be a closure, so it is useful to keep closure information *)
+      Closure (IfBoth (ep, ec), ec')
+
+  let rec free_vars ids e =
+    begin
+      match e with
+      | NUM _ | TRUE | FALSE -> []
+      | VAR x -> [x]
+      | ADD (e1, e2) | SUB (e1, e2) | MUL (e1, e2) | DIV (e1, e2) | MOD (e1, e2) | EQUAL (e1, e2) | LESS (e1, e2) ->
+        let e1' = free_vars ids e1 in
+        let e2' = free_vars ids e2 in
+        e1' @ e2'
+      | NOT e -> free_vars ids e
+      | IF (e1, e2, e3) -> free_vars ids e1 @ free_vars ids e2 @ free_vars ids e3
+      | LET (x, e1, e2) -> free_vars ids e1 @ free_vars (x :: ids) e2
+      | FN (ids, body) -> free_vars ids body
+      | CALL (e, ids') -> free_vars ids e @ ids'
+    end |> List.filter (fun x -> not (List.mem x ids))
+
+  let rec equality_from_id_list ids =
+    match ids with
+    | id::ids' -> IfBoth (IfVar id, equality_from_id_list ids')
+    | [] -> Equal
+
+  let rec satisfy_equality eq id =
+    match eq with
+    | Equal | Unknown -> eq
+    | IfVar id' -> if id = id' then Equal else eq
+    | IfBoth (eq1, eq2) ->
+      let eq1' = satisfy_equality eq1 id in
+      let eq2' = satisfy_equality eq2 id in
+      IfBoth (eq1', eq2')
+    | IfEither (eq1, eq2) ->
+      let eq1' = satisfy_equality eq1 id in
+      let eq2' = satisfy_equality eq2 id in
+      IfEither (eq1', eq2')
+
+  let rec satifsfy_eq_val eq_val id = (* This seems like a hack to me *)
+    match eq_val with
+    | Plain eq -> Plain (satisfy_equality eq id)
+    | Closure (eq1, (ids, eq2)) ->
+      let eq1' = satisfy_equality eq1 id in
+      let eq2' = satifsfy_eq_val eq2 id in
+      Closure (eq1', (ids, eq2'))
+
+  let rec replace_equality eq id id' =
+    match eq with
+    | Equal | Unknown -> eq
+    | IfVar id'' -> if id = id'' then IfVar id' else eq
+    | IfBoth (eq1, eq2) -> IfBoth (replace_equality eq1 id id', replace_equality eq2 id id')
+    | IfEither (eq1, eq2) -> IfEither (replace_equality eq1 id id', replace_equality eq2 id id')
+
+  let rec replace_eq_val eq_val id id' =
+    match eq_val with
+    | Plain eq -> Plain (replace_equality eq id id')
+    | Closure (eq1, (ids, eq2)) -> Closure (replace_equality eq1 id id', (ids, replace_eq_val eq2 id id'))
+
+  let rec eval_eq_val eq_env e =
+    match e with
+    | NUM _ | TRUE | FALSE -> Plain (Equal)
+    | FN (ids, body) ->
+      let fvs = free_vars ids body in
+      let self = equality_from_id_list fvs in
+      let eq_env' = List.fold_left (fun eq_env' id -> Env.bind eq_env' id (Plain (IfVar id))) eq_env ids in (* TODO: this is information loss when a closure is passed in as an argument *)
+      let closure = eval_eq_val eq_env' body in
+      let closure' = List.fold_left (fun closure' id -> satifsfy_eq_val closure' id) closure fvs in
+      Closure(self, (ids, closure'))
+    | VAR x -> Env.lookup eq_env x 
+    | ADD (e1, e2) | SUB (e1, e2) | MUL (e1, e2) | DIV (e1, e2) | MOD (e1, e2) | EQUAL (e1, e2) | LESS (e1, e2) ->
+      let e1' = eval_eq_val eq_env e1 in
+      let e2' = eval_eq_val eq_env e2 in
+      merge_eq_val e1' e2'
+    | NOT e -> eval_eq_val eq_env e
+    | IF (e1, e2, e3) -> (* Temporarily check all subexpressions' equality *)
+      let e1' = eval_eq_val eq_env e1 in
+      let e2' = eval_eq_val eq_env e2 in
+      let e3' = eval_eq_val eq_env e3 in
+      e1' |> merge_eq_val e2' |> merge_eq_val e3'
+    | LET (x, e1, e2) ->
+      let e1' = eval_eq_val eq_env e1 in
+      let eq_env' = Env.bind eq_env x e1' in
+      eval_eq_val eq_env' e2
+    | CALL (e, ids) ->
+      let e' = eval_eq_val eq_env e in
+      let replace equality ids' ids = List.combine ids' ids
+        |> List.fold_left (fun equality (id', id) -> replace_equality equality id id') equality in
+      match e' with
+      | Closure (self, (ids', Closure (inner, innerc))) -> Closure (IfBoth (self, replace inner ids' ids), innerc)
+      | Closure (self, (ids', Plain eq_val)) -> Plain (IfBoth (self, replace eq_val ids' ids))
+      | Plain _ -> Plain (Unknown)
+
 end

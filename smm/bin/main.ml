@@ -14,6 +14,22 @@ let run_once ~silent ctx args =
   | Smm.Mem.Not_initialized -> Printf.eprintf "Error: memory not initialized\n%!"
   | Smm.Mem.Not_allocated -> Printf.eprintf "Error: memory not allocated\n%!"
 
+let equality_of_eq_val eq_val =
+  match eq_val with
+  | Smm.Smm.Plain eq -> eq
+  | Smm.Smm.Closure (self, _) -> self
+
+let inner_equality pgm =
+  try
+    match Smm.Smm.eval_eq_val Smm.Smm.emptyEqEnv pgm with
+    | Smm.Smm.Closure (_, (_, inner)) -> equality_of_eq_val inner
+    | Smm.Smm.Plain eq -> eq
+  with
+  | Smm.Env.Not_bound -> Smm.Smm.Unknown
+
+let print_inner_equality pgm =
+  Printf.printf "Inner equality: %s\n" (Pp.string_of_equality (inner_equality pgm))
+
 let rec silent_loop ctx arity =
   match Scan.scan_args arity with
   | exception Scan.Invalid_input s ->
@@ -84,8 +100,10 @@ let () =
   in
   let (_, _, f, _) = ctx in
   let (_, ids, _, _) = Smm.Smm.value_function f in
-  if not silent then
+  if not silent then begin
     Printf.printf "Evaluated function with (%s)\n" (String.concat ", " ids);
+    print_inner_equality pgm
+  end;
   match ids with
   | [] ->
     if not silent then print_endline "Run #1";

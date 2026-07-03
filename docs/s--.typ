@@ -62,7 +62,7 @@ Symbols without subscript are non-associative.
 Precedence can be overridden by parentheses.
 
 $
-  {text("function calling")}_L,
+//   {text("function calling")}_L,
 //   \ {mono(".1"), mono(".2")}_L,
   \ {mono("not")}_R,
   \ {mono("*"), mono("/"), mono("%")}_L,

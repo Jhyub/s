@@ -1,4 +1,5 @@
-fn (x, y) =>
+fn (x, y, z) =>
     let g := fn (x) => x + y in
+    let r := fn (w) => w + z in
     let p := 1 in
     g(x) + g(x) + g(p)
