@@ -1,3 +1,9 @@
 (test
  (name test_smm)
  (libraries smm_))
+
+(test
+ (name test_cli)
+ (libraries unix)
+ (action
+  (run %{test} %{bin:smm})))

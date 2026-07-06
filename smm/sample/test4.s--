@@ -1,0 +1,5 @@
+let fn g(y, z) =>
+    let fn f(x, y) => x + y in
+    let one := 1 in
+    f (one, z) + f (one, z)
+in g(x, z)

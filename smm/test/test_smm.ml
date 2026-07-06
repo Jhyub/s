@@ -1,13 +1,42 @@
 open Smm_
 
+let parse_string s = Parser.program Lexer.start (Lexing.from_string s)
+
 let eval_string s =
-  let pgm = Parser.program Lexer.start (Lexing.from_string s) in
+  let pgm = parse_string s in
   Smm.Smm.run pgm
+
+let eval_string_with_values s bindings =
+  let pgm = parse_string s in
+  Smm.Smm.run_with_values pgm bindings
 
 let assert_string expected src =
   let actual = Pp.string_of_value (eval_string src) in
   if not (String.equal expected actual) then
     failwith (Printf.sprintf "for %S: expected %S, got %S" src expected actual)
+
+let assert_string_with_values expected src bindings =
+  let actual = Pp.string_of_value (eval_string_with_values src bindings) in
+  if not (String.equal expected actual) then
+    failwith (Printf.sprintf "for %S: expected %S, got %S" src expected actual)
+
+let string_of_ids ids = "[" ^ String.concat "; " ids ^ "]"
+
+let string_of_change change =
+  match change with
+  | Smm.Smm.Same -> "Same"
+  | Smm.Smm.Diff -> "Diff"
+  | Smm.Smm.Unknown -> "Unknown"
+
+let assert_free_vars expected src =
+  let actual = Smm.Smm.free_variable_list (parse_string src) in
+  if expected <> actual then
+    failwith
+      (Printf.sprintf
+         "for %S: expected free vars %s, got %s"
+         src
+         (string_of_ids expected)
+         (string_of_ids actual))
 
 let assert_raises expected_exn src =
   match eval_string src with
@@ -15,6 +44,26 @@ let assert_raises expected_exn src =
   | exception e ->
     if not (expected_exn e) then
       failwith (Printf.sprintf "for %S: got unexpected exception %s" src (Printexc.to_string e))
+
+let assert_raises_with_values expected_exn src bindings =
+  match eval_string_with_values src bindings with
+  | _ -> failwith (Printf.sprintf "for %S: expected exception, got a value" src)
+  | exception e ->
+    if not (expected_exn e) then
+      failwith (Printf.sprintf "for %S: got unexpected exception %s" src (Printexc.to_string e))
+
+let assert_final_change expected src ids before_values after_values =
+  let pgm = parse_string src in
+  let actual =
+    Smm.Smm.final_change (Smm.Smm.eval_change pgm) ids before_values after_values
+  in
+  if actual <> expected then
+    failwith
+      (Printf.sprintf
+         "for %S: expected final change %s, got %s"
+         src
+         (string_of_change expected)
+         (string_of_change actual))
 
 let () =
   (* arithmetic / precedence *)
@@ -87,5 +136,53 @@ let () =
   assert_raises
     (function Smm.Smm.Error _ -> true | _ -> false)
     "let x := 1 in x()";
+
+  (* free-variable discovery *)
+  assert_free_vars [ "x"; "y" ] "x + x + y";
+  assert_free_vars [ "y" ] "let x := y in x + y";
+  assert_free_vars [ "f"; "x"; "y" ] "f(x, y) + x";
+  assert_free_vars
+    [ "f"; "y"; "z" ]
+    "let fn f(x) => f(x) + y in f(z)";
+
+  (* running with prompted free-variable values *)
+  assert_string_with_values
+    "5"
+    "x + y"
+    [ ("x", Smm.Smm.Num 2); ("y", Smm.Smm.Num 3) ];
+  assert_string_with_values
+    "2"
+    "if flag then x else y"
+    [ ("flag", Smm.Smm.Bool false); ("x", Smm.Smm.Num 1); ("y", Smm.Smm.Num 2) ];
+  assert_raises_with_values
+    (function Smm.Smm.Error _ -> true | _ -> false)
+    "f(x)"
+    [ ("f", Smm.Smm.Num 1); ("x", Smm.Smm.Num 2) ];
+
+  (* change analysis for frontend reuse *)
+  assert_final_change
+    Smm.Smm.Same
+    "x + y"
+    [ "x"; "y" ]
+    [ Smm.Smm.Num 1; Smm.Smm.Num 2 ]
+    [ Smm.Smm.Num 1; Smm.Smm.Num 2 ];
+  assert_final_change
+    Smm.Smm.Diff
+    "x + y"
+    [ "x"; "y" ]
+    [ Smm.Smm.Num 1; Smm.Smm.Num 2 ]
+    [ Smm.Smm.Num 1; Smm.Smm.Num 3 ];
+  assert_final_change
+    Smm.Smm.Same
+    "let y := x in 1"
+    [ "x" ]
+    [ Smm.Smm.Num 1 ]
+    [ Smm.Smm.Num 2 ];
+  assert_final_change
+    Smm.Smm.Same
+    "let fn f(x, y) => x + y in f(x, y)"
+    [ "x"; "y" ]
+    [ Smm.Smm.Num 1; Smm.Smm.Num 2 ]
+    [ Smm.Smm.Num 1; Smm.Smm.Num 2 ];
 
   print_endline "All tests passed"

@@ -197,6 +197,49 @@ module Smm = struct
       | CALL (f, ids) -> f :: ids
     end |> List.filter (fun x -> not (List.mem x bound_vars))
 
+  let unique_ids ids =
+    let rec aux seen acc ids =
+      match ids with
+      | [] -> List.rev acc
+      | id :: rest ->
+        if List.mem id seen then aux seen acc rest
+        else aux (id :: seen) (id :: acc) rest
+    in
+    aux [] [] ids
+
+  let free_variable_list pgm = free_vars [] pgm |> unique_ids
+
+  let bind_value (mem, env) id value =
+    let loc, mem' = Mem.alloc mem in
+    let mem'' = Mem.store mem' loc value in
+    (mem'', Env.bind env id (Addr loc))
+
+  let run_with_values pgm bindings =
+    let mem, env =
+      List.fold_left
+        (fun state (id, value) -> bind_value state id value)
+        (emptyMemory, emptyEnv)
+        bindings
+    in
+    fst (eval mem env pgm)
+
+  let change_of_values before after = if eq before after then Same else Diff
+
+  let change_env_from_values ids before_values after_values =
+    let rec aux cenv ids before_values after_values =
+      match ids, before_values, after_values with
+      | [], [], [] -> cenv
+      | id :: ids', before :: before_values', after :: after_values' ->
+        let entry = Value (change_of_values before after) in
+        aux (Env.bind cenv id entry) ids' before_values' after_values'
+      | _ -> raise (Error "TypeError: wrong number of arguments")
+    in
+    aux emptyChangeEnv ids before_values after_values
+
+  let final_change change_fn ids before_values after_values =
+    let cenv = change_env_from_values ids before_values after_values in
+    change_fn cenv |> change_entry_value
+
   let rec eval_change e =
     match e with
     | NUM _ | TRUE | FALSE -> fun _ -> Value (Same)
