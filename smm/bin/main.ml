@@ -4,7 +4,7 @@ let parse path =
   let ic = open_in path in
   Fun.protect
     ~finally:(fun () -> close_in ic)
-    (fun () -> Parser.program Lexer.start (Lexing.from_channel ic))
+    (fun () -> Parser.program Lexer.start (Lexing.from_channel ic) |> Smm.Smm.from_pre)
 
 type previous_run =
   { values : Smm.Smm.value list

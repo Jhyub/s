@@ -43,7 +43,7 @@ module Env = struct
   let bind (E env) id loc = E (fun x -> if x = id then loc else env x)
 end
 
-module Smm = struct
+module SmmPre = struct
   exception Error of string
 
   type id = string
@@ -61,10 +61,42 @@ module Smm = struct
     | EQUAL of exp * exp
     | LESS of exp * exp
     | NOT of exp
-    (* | SEQ of exp * exp (* sequence *) *)
-    (* | PAIR of exp * exp *)
-    (* | PFST of exp *)
-    (* | PSND of exp *)
+    | IF of exp * exp * exp (* if-then-else *)
+    | CALL of id * id list
+    | LET of id * exp * exp
+    | LETFN of id * id list * exp * exp
+
+  type program = exp
+  type value = Num of int | Bool of bool
+  and memory = value Mem.t
+  and env = (id, entry) Env.t
+  and entry = Addr of Loc.t | Function of id list * exp * env
+
+  let emptyMemory = Mem.empty
+  let emptyEnv = Env.empty
+
+end
+
+module Smm = struct
+  exception Error of string
+
+  type id = string
+  type eid = int
+
+  type exp = eid * ebody
+  and ebody = 
+    | NUM of int
+    | TRUE
+    | FALSE
+    | VAR of id
+    | ADD of exp * exp
+    | SUB of exp * exp
+    | MUL of exp * exp
+    | DIV of exp * exp
+    | MOD of exp * exp
+    | EQUAL of exp * exp
+    | LESS of exp * exp
+    | NOT of exp
     | IF of exp * exp * exp (* if-then-else *)
     | CALL of id * id list
     | LET of id * exp * exp
@@ -78,6 +110,59 @@ module Smm = struct
 
   let emptyMemory = Mem.empty
   let emptyEnv = Env.empty
+
+  let next_eid = ref 0
+  let new_eid () =
+    let eid = !next_eid in
+    next_eid := eid + 1;
+    eid
+
+  let from_pre (e : SmmPre.exp) : exp =
+    next_eid := 0;
+    let rec annotate_pre e =
+      let ne = new_eid () in
+      match e with
+      | SmmPre.NUM n -> (ne, NUM n)
+      | SmmPre.TRUE -> (ne, TRUE)
+      | SmmPre.FALSE -> (ne, FALSE)
+      | SmmPre.VAR x -> (ne, VAR x)
+      | SmmPre.ADD (e1, e2) ->
+        let (e1', e2') = annotate_pre e1, annotate_pre e2 in
+        (ne, ADD (e1', e2'))
+      | SmmPre.SUB (e1, e2) ->
+        let (e1', e2') = annotate_pre e1, annotate_pre e2 in
+        (ne, SUB (e1', e2'))
+      | SmmPre.MUL (e1, e2) ->
+        let (e1', e2') = annotate_pre e1, annotate_pre e2 in
+        (ne, MUL (e1', e2'))
+      | SmmPre.DIV (e1, e2) ->
+        let (e1', e2') = annotate_pre e1, annotate_pre e2 in
+        (ne, DIV (e1', e2'))
+      | SmmPre.MOD (e1, e2) ->
+        let (e1', e2') = annotate_pre e1, annotate_pre e2 in
+        (ne, MOD (e1', e2'))
+      | SmmPre.EQUAL (e1, e2) ->
+        let (e1', e2') = annotate_pre e1, annotate_pre e2 in
+        (ne, EQUAL (e1', e2'))
+      | SmmPre.LESS (e1, e2) ->
+        let (e1', e2') = annotate_pre e1, annotate_pre e2 in
+        (ne, LESS (e1', e2'))
+      | SmmPre.NOT e ->
+        let e' = annotate_pre e in
+        (ne, NOT e')
+      | SmmPre.IF (e1, e2, e3) ->
+        let (e1', e2', e3') = annotate_pre e1, annotate_pre e2, annotate_pre e3 in
+        (ne, IF (e1', e2', e3'))
+      | SmmPre.CALL (f, ids) ->
+        (ne, CALL (f, ids))
+      | SmmPre.LET (x, e1, e2) ->
+        let (e1', e2') = annotate_pre e1, annotate_pre e2 in
+        (ne, LET (x, e1', e2'))
+      | SmmPre.LETFN (f, params, body, e1) ->
+        let (body', e1') = annotate_pre body, annotate_pre e1 in
+        (ne, LETFN (f, params, body', e1'))
+    in
+    annotate_pre e
 
   let value_int v =
     match v with Num n -> n | _ -> raise (Error "TypeError : not int")
@@ -103,7 +188,8 @@ module Smm = struct
     | _ -> false
 
   let rec eval mem env e =
-    match e with
+    let (eid, e') = e in
+    match e' with
     | NUM n -> (Num n, mem)
     | TRUE -> (Bool true, mem)
     | FALSE -> (Bool false, mem)
@@ -183,7 +269,8 @@ module Smm = struct
 
   let rec free_vars bound_vars e =
     begin
-      match e with
+      let (eid, e') = e in
+      match e' with
       | NUM _ | TRUE | FALSE -> []
       | VAR x -> [x]
       | ADD (e1, e2) | SUB (e1, e2) | MUL (e1, e2) | DIV (e1, e2) | MOD (e1, e2) | EQUAL (e1, e2) | LESS (e1, e2) ->
@@ -241,7 +328,8 @@ module Smm = struct
     change_fn cenv |> change_entry_value
 
   let rec eval_change e =
-    match e with
+    let (eid, e') = e in
+    match e' with
     | NUM _ | TRUE | FALSE -> fun _ -> Value (Same)
     | VAR x -> fun cenv -> Env.lookup cenv x
     | ADD (e1, e2) | SUB (e1, e2) -> fun cenv ->

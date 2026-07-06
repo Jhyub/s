@@ -1,6 +1,6 @@
 open Smm_
 
-let parse_string s = Parser.program Lexer.start (Lexing.from_string s)
+let parse_string s = Parser.program Lexer.start (Lexing.from_string s) |> Smm.Smm.from_pre
 
 let eval_string s =
   let pgm = parse_string s in
@@ -65,7 +65,21 @@ let assert_final_change expected src ids before_values after_values =
          (string_of_change expected)
          (string_of_change actual))
 
+let assert_root_eid expected src =
+  let actual, _ = parse_string src in
+  if actual <> expected then
+    failwith
+      (Printf.sprintf
+         "for %S: expected root expression id %d, got %d"
+         src
+         expected
+         actual)
+
 let () =
+  (* frontend conversion *)
+  assert_root_eid 0 "1 + 2";
+  assert_root_eid 0 "let x := 1 in x";
+
   (* arithmetic / precedence *)
   assert_string "14" "2 + 3 * 4";
   assert_string "20" "(2 + 3) * 4";
