@@ -164,6 +164,106 @@ module Smm = struct
 
   let run pgm = fst (eval emptyMemory emptyEnv pgm)
 
+  (* Same: value is ensured to be the same *)
+  (* Unknown: the interpreter might perform equality checks to mark it as Same or Diff on runtime *)
+  (* Diff: value is trusted to be different, hence re-evaluating for all steps *)
+  (* Note: it is sound to mark anything as Unknown *)
+  (* Question: do we make it sound to mark anything as Diff? *)
+  type change = Same | Diff | Unknown
+  and change_env = (id, change_entry) Env.t
+  and change_fn = change_env -> change
+  and change_entry = Value of change | Function of (id list * exp * change_env)
+  let emptyChangeEnv = Env.empty
+
+  let change_entry_value entry =
+    match entry with | Value v -> v | Function _ -> raise (Error "TypeError: not a value")
+
+  let change_entry_function entry =
+    match entry with | Function f -> f | Value _ -> raise (Error "TypeError: not a function")
+
+  let rec free_vars bound_vars e =
+    begin
+      match e with
+      | NUM _ | TRUE | FALSE -> []
+      | VAR x -> [x]
+      | ADD (e1, e2) | SUB (e1, e2) | MUL (e1, e2) | DIV (e1, e2) | MOD (e1, e2) | EQUAL (e1, e2) | LESS (e1, e2) ->
+        let e1' = free_vars bound_vars e1 in
+        let e2' = free_vars bound_vars e2 in
+        e1' @ e2'
+      | NOT e -> free_vars bound_vars e
+      | IF (e1, e2, e3) -> free_vars bound_vars e1 @ free_vars bound_vars e2 @ free_vars bound_vars e3
+      | LET (x, e1, e2) -> free_vars bound_vars e1 @ free_vars (x :: bound_vars) e2
+      | LETFN (f, params, body, e1) -> free_vars (params @ bound_vars) body @ free_vars (f :: bound_vars) e1
+      | CALL (f, ids) -> f :: ids
+    end |> List.filter (fun x -> not (List.mem x bound_vars))
+
+  let rec eval_change e =
+    match e with
+    | NUM _ | TRUE | FALSE -> fun _ -> Value (Same)
+    | VAR x -> fun cenv -> Env.lookup cenv x
+    | ADD (e1, e2) | SUB (e1, e2) -> fun cenv ->
+      let e1' = eval_change e1 cenv |> change_entry_value in
+      let e2' = eval_change e2 cenv |> change_entry_value in
+      begin
+        match e1', e2' with
+        | Same, Same -> Value (Same)
+        | Same, Diff | Diff, Same -> Value (Diff)
+        | _, _ -> Value (Unknown)
+      end
+    | MUL (e1, e2) | DIV (e1, e2) | MOD (e1, e2) -> fun cenv ->
+      let e1' = eval_change e1 cenv |> change_entry_value in
+      let e2' = eval_change e2 cenv |> change_entry_value in
+      begin
+        match e1', e2' with
+        | Same, Same -> Value (Same)
+        (* | Same, Diff | Diff, Same -> Diff *) (* We might have cases like 0 * x = 0 *)
+        | _, _ -> Value (Unknown)
+      end
+    | EQUAL (e1, e2) -> fun cenv ->
+      let e1' = eval_change e1 cenv |> change_entry_value in
+      let e2' = eval_change e2 cenv |> change_entry_value in
+      begin
+        match e1', e2' with
+        | Same, Same -> Value (Same)
+        | Same, Diff | Diff, Same -> Value (Diff)
+        | _, _ -> Value (Unknown)
+      end
+    | LESS (e1, e2) -> fun cenv ->
+      let e1' = eval_change e1 cenv |> change_entry_value in
+      let e2' = eval_change e2 cenv |> change_entry_value in
+      begin
+        match e1', e2' with
+        | Same, Same -> Value (Same)
+        | _, _ -> Value (Unknown)
+      end
+    | NOT e -> fun cenv -> eval_change e cenv
+    | IF (e1, e2, e3) -> fun cenv ->
+      let e1' = eval_change e1 cenv |> change_entry_value in
+      let e2' = eval_change e2 cenv |> change_entry_value in
+      let e3' = eval_change e3 cenv |> change_entry_value in
+      begin
+        match e1', e2', e3' with
+        | Same, Same, Same -> Value (Same)
+        | _, _, _ -> Value (Unknown)
+      end
+    | LET (x, e1, e2) -> fun cenv ->
+      let e1' = eval_change e1 cenv in
+      let cenv' = Env.bind cenv x e1' in
+      eval_change e2 cenv'
+    (* Are these good enough? Can we make a 'function' itself same or not same to skip each calls for CALL? *)
+    | LETFN (f, params, body, e1) -> fun cenv ->
+      let cenv' = Env.bind cenv f (Function (params, body, cenv)) in
+      eval_change e1 cenv'
+    | CALL (f, ids) -> fun cenv ->
+      let (params, body, cenv') = change_entry_function (Env.lookup cenv f) in
+      let entries = ids |> List.map (Env.lookup cenv) in
+      let cenv'' =
+        match List.combine params entries with
+        | bindings ->
+          List.fold_left (fun cenv'' (param, entry) -> Env.bind cenv'' param entry) cenv' bindings
+        | exception Invalid_argument _ -> raise (Error "TypeError: wrong number of arguments")
+      in
+      eval_change body cenv''
 
   (*
   type equality = Equal | IfBoth of (equality * equality) | IfEither of (equality * equality) | IfVar of id | Unknown
