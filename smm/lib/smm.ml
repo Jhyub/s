@@ -248,15 +248,15 @@ module Smm_pre = struct
       let (v, mem1) = eval mem env e1 in
       if value_bool v then eval mem1 env e2 else eval mem1 env e3
     | CALL (f, ids) ->
-      let (fid, params, body, env) = entry_function (Env.lookup env f) in
+      let (fid, params, body, env') = entry_function (Env.lookup env f) in
       let entries = ids |> List.map (Env.lookup env) in
-      let env' =
+      let env'' =
         match List.combine params entries with
         | bindings ->
-          List.fold_left (fun env' (param, entry) -> Env.bind env' param entry) env bindings
+          List.fold_left (fun env'' (param, entry) -> Env.bind env'' param entry) env' bindings
         | exception Invalid_argument _ -> raise (Error "TypeError: wrong number of arguments")
       in
-      eval mem env' body
+      eval mem env'' body
     | LET (x, e1, e2) ->
       let (v1, mem1) = eval mem env e1 in
       let l, mem2 = Mem.alloc mem1 in
@@ -307,8 +307,8 @@ module Smm_pre = struct
         free_vars exclude e1 @ free_vars exclude e2
       | NOT e -> free_vars exclude e
       | IF (e1, e2, e3) -> free_vars exclude e1 @ free_vars exclude e2 @ free_vars exclude e3
-      | LET (x, e1, e2) -> free_vars (x :: exclude) e1 @ free_vars exclude e2
-      | LETFN (fid, f, params, body, e1) -> free_vars (params @ exclude) body @ free_vars exclude e1
+      | LET (x, e1, e2) -> free_vars exclude e1 @ free_vars (x :: exclude) e2
+      | LETFN (fid, f, params, body, e1) -> free_vars (params @ exclude) body @ free_vars (f :: exclude) e1
       | CALL (f, ids) -> List.fold_left (fun ret id -> if List.mem id exclude then ret else id :: ret) [] (f :: ids)
     end |> keep_unique
     
@@ -418,8 +418,7 @@ module Smm_pre = struct
               | Some (Bool b) -> begin
                 match ce1 with
                 | Same -> if b then Value (ce2) else Value (ce3)
-                | Diff -> if b then Value (ce3) else Value (ce2)
-                | Unknown -> Value (Unknown)
+                | Diff | Unknown -> Value (Unknown)
               end
               | _ -> Value (Unknown) (* Should not happen *)
             end
@@ -507,6 +506,15 @@ module Smm = struct
        ^ "\n");
     flush stderr
 
+  let debug_reuse_hit eid ebody =
+    prerr_string
+      ("[Smm.eval] Reuse hit: eid="
+       ^ string_of_int eid
+       ^ " expr="
+       ^ string_of_ebody_type ebody
+       ^ "\n");
+    flush stderr
+
   let entry_addr entry =
     match entry with Addr l -> l | Function _ -> raise (Error "TypeError: not a value")
 
@@ -525,8 +533,8 @@ module Smm = struct
         free_vars exclude e1 @ free_vars exclude e2
       | NOT e -> free_vars exclude e
       | IF (e1, e2, e3) -> free_vars exclude e1 @ free_vars exclude e2 @ free_vars exclude e3
-      | LET (x, e1, e2) -> free_vars (x :: exclude) e1 @ free_vars exclude e2
-      | LETFN (fid, f, params, body, e1) -> free_vars (params @ exclude) body @ free_vars exclude e1
+      | LET (x, e1, e2) -> free_vars exclude e1 @ free_vars (x :: exclude) e2
+      | LETFN (fid, f, params, body, e1) -> free_vars (params @ exclude) body @ free_vars (f :: exclude) e1
       | CALL (f, ids) -> List.fold_left (fun ret id -> if List.mem id exclude then ret else id :: ret) [] (f :: ids)
     end |> keep_unique
 
@@ -582,37 +590,44 @@ module Smm = struct
       | Diff -> None
     end in
     match early_return with
-    | Some ret -> (ret, mem, Cache.bind emptyTrace (Eid eid) ret, emptyTrace)
+    | Some ret ->
+      debug_reuse_hit eid e';
+      (ret, mem, Cache.bind ptrace (Eid eid) ret, emptyTrace)
     | None -> begin
       (* Literals *)
-      let aux x = (x, mem, Cache.bind emptyTrace (Eid eid) x, emptyTrace) in
+      let aux x = (x, mem, Cache.bind ptrace (Eid eid) x, emptyTrace) in
       (* We re-evaluate the change with additional information from new ctrace, *)
       (* and propagate our change information accordingly, *)
       (* only if we need to do (overriding 'Unknown's.) *)
       (* Do not override with 'Unknown' in ctrace. *)
-      let aux' change_fn v mem trace ctrace = begin
+      let aux' change_fn cenv v mem trace ctrace = begin
         let change' = change_fn (ptrace, cenv, ctrace) |> cent_change in
+        let trace' = Cache.bind trace (Eid eid) v in
         match change' with
         | Same ->
           debug_same_hit eid e';
-          let v = begin match Cache.lookup ptrace (Eid eid) with | Some v -> v | None -> v end in
-          (v, mem, trace, ctrace)
+          let v = begin
+            match Cache.lookup ptrace (Eid eid) with
+            | Some v -> debug_reuse_hit eid e'; v
+            | None -> v
+          end in
+          (v, mem, trace', ctrace)
         | Diff ->
-          (v, mem, trace, ctrace)
+          (v, mem, trace', ctrace)
         | Unknown -> begin
           match Cache.lookup ptrace (Eid eid) with
-          | Some v' -> (v, mem, trace, Cache.bind ctrace eid (Value (if eq v v' then Same else Diff)))
-          | None -> (v, mem, trace, ctrace)
+          | Some v' -> (v, mem, trace', Cache.bind ctrace eid (Value (if eq v v' then Same else Diff)))
+          | None -> (v, mem, trace', ctrace)
         end
       end in
-      let aux'' = aux' change_fn in
+      let aux'' = aux' change_fn cenv in
       match e' with
       | NUM n -> aux (Num n)
       | TRUE -> aux (Bool true)
       | FALSE -> aux (Bool false)
       | VAR x ->
         let v = Mem.load mem (entry_addr (Env.lookup env x)) in
-        (v, mem, Cache.bind emptyTrace (Eid eid) v, Cache.bind emptyTrace eid (Env.lookup cenv x))
+        (v, mem, Cache.bind ptrace (Eid eid) v, Cache.bind emptyTrace eid (Env.lookup cenv x))
       | ADD (e1, e2) ->
         let (v1, mem1, trace1, ctrace1) = eval mem env ptrace cenv ctrace e1 in
         let (v2, mem2, trace2, ctrace2) = eval mem1 env trace1 cenv ctrace1 e2 in
@@ -636,7 +651,7 @@ module Smm = struct
       | EQUAL (e1, e2) ->
         let (v1, mem1, trace1, ctrace1) = eval mem env ptrace cenv ctrace e1 in
         let (v2, mem2, trace2, ctrace2) = eval mem1 env trace1 cenv ctrace1 e2 in
-        aux'' (Bool (value_bool v1 = value_bool v2)) mem2 trace2 ctrace2
+        aux'' (Bool (eq v1 v2)) mem2 trace2 ctrace2
       | LESS (e1, e2) ->
         let (v1, mem1, trace1, ctrace1) = eval mem env ptrace cenv ctrace e1 in
         let (v2, mem2, trace2, ctrace2) = eval mem1 env trace1 cenv ctrace1 e2 in
@@ -656,8 +671,8 @@ module Smm = struct
         let (_, (_, _, change_fn', cenv')) = Env.lookup cenv f |> cent_function in
         (* Compute change for each argument *)
         (* CALL is a point of change propagation. <- is this inevitable? *)
-        let aux''' id = begin
-          let v_old = Cache.lookup ptrace (FnArg (fid, id)) in
+        let aux''' (id, param) = begin
+          let v_old = Cache.lookup ptrace (FnArg (fid, param)) in
           let v = Mem.load mem (entry_addr (Env.lookup env id)) in
           match v_old with
           | Some v_old ->
@@ -667,15 +682,15 @@ module Smm = struct
             end else Diff
           | None -> Unknown
         end in
-        let aux'''' trace id = begin
+        let aux'''' trace (id, param) = begin
           let v = Mem.load mem (entry_addr (Env.lookup env id)) in
-          Cache.bind trace (FnArg (fid, id)) v
+          Cache.bind trace (FnArg (fid, param)) v
         end in
-        let changes = List.map aux''' ids in
-        let changes' = List.combine ids changes in
-        let trace = List.fold_left aux'''' ptrace ids in
+        let changes = List.map aux''' (List.combine ids params) in
+        let changes' = List.combine params changes in
+        let trace = List.fold_left aux'''' ptrace (List.combine ids params) in
         let cenv'' = List.fold_left (fun cenv (id, change) -> Env.bind cenv id (Value change)) cenv' changes' in
-        let entries = ids |> List.map (Env.lookup env') in
+        let entries = ids |> List.map (Env.lookup env) in
         let env'' =
           begin
             match List.combine params entries with
@@ -685,12 +700,12 @@ module Smm = struct
             end
           in
         let (v, mem', trace', ctrace') = eval mem env'' trace cenv'' ctrace body in
-        aux' change_fn' v mem' trace' ctrace'
+        aux' change_fn' cenv'' v mem' trace' ctrace' (* Not sure if it is fine to run with outer ptrace here *)
       | LET (x, e1, e2) ->
         let (v1, mem1, trace1, ctrace1) = eval mem env ptrace cenv ctrace e1 in
         (* LET is also a point of change propagation.*)
-        let change' = change_fn (ptrace, cenv, ctrace1) |> cent_change in
-        let (eid1, _, _) = e1 in 
+        let (eid1, change_fn1, _) = e1 in 
+        let change' = change_fn1 (ptrace, cenv, ctrace1) |> cent_change in
         let change'' = begin
           match change' with
           | Same ->
@@ -719,13 +734,15 @@ module Smm = struct
           match change' with
           | Same ->
             debug_same_hit eid e';
-            Cache.lookup ptrace (Eid eid1)
+            Cache.lookup ptrace (Eid eid)
           | Diff | Unknown -> None
         end in
         begin
           match v' with
-          | Some v' -> (v', mem1, trace1, ctrace1')
-          | None -> eval mem3 env' trace1 cenv' ctrace1' e2
+          | Some v' ->
+            debug_reuse_hit eid e';
+            (v', mem1, Cache.bind trace1 (Eid eid) v', ctrace1')
+          | None -> eval mem3 env' trace1 cenv' ctrace1' e2 |> fun (v, mem, trace, ctrace) -> (v, mem, Cache.bind trace (Eid eid) v, ctrace)
         end
       | LETFN (fid, f, params, body, e1) ->
         (* We do not run additional evaluations for 'letfn' itself, *)
@@ -745,7 +762,7 @@ module Smm = struct
         let lit_change = List.fold_left aux Same body_fvs in
         let (eidb, cfnb, ebodyb) = body in
         let cenv' = Env.bind cenv f (Function (lit_change, (fid, params, cfnb, cenv))) in
-        eval mem env' ptrace cenv' ctrace body
+        eval mem env' ptrace cenv' ctrace e1 |> fun (v, mem, trace, ctrace) -> (v, mem, Cache.bind trace (Eid eid) v, ctrace)
     end
 
 
