@@ -479,6 +479,34 @@ module Smm = struct
   type env = (id, entry) Env.t
   and entry = Addr of Loc.t | Function of fid * id list * exp * env
 
+  let string_of_ebody_type ebody =
+    match ebody with
+    | NUM _ -> "NUM"
+    | TRUE -> "TRUE"
+    | FALSE -> "FALSE"
+    | VAR _ -> "VAR"
+    | ADD _ -> "ADD"
+    | SUB _ -> "SUB"
+    | MUL _ -> "MUL"
+    | DIV _ -> "DIV"
+    | MOD _ -> "MOD"
+    | EQUAL _ -> "EQUAL"
+    | LESS _ -> "LESS"
+    | NOT _ -> "NOT"
+    | IF _ -> "IF"
+    | CALL _ -> "CALL"
+    | LET _ -> "LET"
+    | LETFN _ -> "LETFN"
+
+  let debug_same_hit eid ebody =
+    prerr_string
+      ("[Smm.eval] Same hit: eid="
+       ^ string_of_int eid
+       ^ " expr="
+       ^ string_of_ebody_type ebody
+       ^ "\n");
+    flush stderr
+
   let entry_addr entry =
     match entry with Addr l -> l | Function _ -> raise (Error "TypeError: not a value")
 
@@ -547,7 +575,9 @@ module Smm = struct
     let change = change_fn (ptrace, cenv, emptyTrace) |> cent_change in
     let early_return = begin
       match change with
-      | Same -> Cache.lookup ptrace (Eid eid)
+      | Same ->
+        debug_same_hit eid e';
+        Cache.lookup ptrace (Eid eid)
       | Unknown -> None
       | Diff -> None
     end in
@@ -564,6 +594,7 @@ module Smm = struct
         let change' = change_fn (ptrace, cenv, ctrace) |> cent_change in
         match change' with
         | Same ->
+          debug_same_hit eid e';
           let v = begin match Cache.lookup ptrace (Eid eid) with | Some v -> v | None -> v end in
           (v, mem, trace, ctrace)
         | Diff ->
@@ -629,7 +660,11 @@ module Smm = struct
           let v_old = Cache.lookup ptrace (FnArg (fid, id)) in
           let v = Mem.load mem (entry_addr (Env.lookup env id)) in
           match v_old with
-          | Some v_old -> if eq v v_old then Same else Diff
+          | Some v_old ->
+            if eq v v_old then begin
+              debug_same_hit eid e';
+              Same
+            end else Diff
           | None -> Unknown
         end in
         let aux'''' trace id = begin
@@ -658,7 +693,9 @@ module Smm = struct
         let (eid1, _, _) = e1 in 
         let change'' = begin
           match change' with
-          | Same -> Same
+          | Same ->
+            debug_same_hit eid e';
+            Same
           | Diff -> Diff
           | Unknown ->
             let v1_old = Cache.lookup ptrace (Eid eid1) in
@@ -680,7 +717,9 @@ module Smm = struct
         let change' = change_fn (ptrace, cenv', ctrace1') |> cent_change in
         let v' = begin
           match change' with
-          | Same -> Cache.lookup ptrace (Eid eid1)
+          | Same ->
+            debug_same_hit eid e';
+            Cache.lookup ptrace (Eid eid1)
           | Diff | Unknown -> None
         end in
         begin
@@ -697,7 +736,9 @@ module Smm = struct
         let aux change id = begin
           let c = Env.lookup cenv id |> cent_change in
           match change, c with
-          | Same, Same -> Same
+          | Same, Same ->
+            debug_same_hit eid e';
+            Same
           | _, Diff -> Diff
           | _, _ -> Unknown
         end in
