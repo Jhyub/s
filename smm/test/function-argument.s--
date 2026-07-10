@@ -1,0 +1,4 @@
+let x := 5 in
+let fn inc(y) => y + 1 in
+let fn apply(f, x) => f(x) in
+apply(inc, x)

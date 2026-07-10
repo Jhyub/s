@@ -263,7 +263,8 @@ $
     prooftree(rule(
         name: [Call],
         $sigma(f) = chevron.l [x'_1, x'_2, ..., x'_k], e', sigma' chevron.r$,
-        $sigma'{x'_1 |-> sigma(x_1)}{x'_2 |-> sigma(x_2)}...{x'_k |-> sigma(x_k)}, M tack.r e' arrow.b.double v, M_1$,
+        $sigma(x_i) = l_i, M(l_i) = v_i quad (1 <= i <= k)$,
+        $sigma'{x'_1 |-> l_1}{x'_2 |-> l_2}...{x'_k |-> l_k}, M tack.r e' arrow.b.double v, M_1$,
         $sigma, M tack.r f mono("(") x_1 mono(",") x_2 mono(",") ... mono(",") x_k mono(")") arrow.b.double v, M_1$,
     ))
 ))

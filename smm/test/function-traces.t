@@ -33,3 +33,8 @@
 
   $ ../bin/main.exe same-closure-activation.s-- 2>&1 >/dev/null | grep -c 'Reuse hit:.*expr=ADD'
   1
+
+  $ ../bin/main.exe function-argument.s-- 2>function-argument.err
+  [1]
+  $ tail -n 1 function-argument.err
+  Error: TypeError: function arguments are not supported

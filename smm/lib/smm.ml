@@ -200,6 +200,11 @@ module Smm_pre = struct
     | Function (fid, params, body, cenv) -> (fid, params, body, cenv)
     | Addr _ -> raise (Error "TypeError: not a function")
 
+  let validate_call_argument = function
+    | Addr _ -> ()
+    | Function _ ->
+      raise (Error "TypeError: function arguments are not supported")
+
   let eq v1 v2 =
     match v1, v2 with
     | Num n1, Num n2 -> n1 = n2
@@ -253,6 +258,9 @@ module Smm_pre = struct
       let env'' =
         match List.combine params entries with
         | bindings ->
+          List.iter
+            (fun (_, entry) -> validate_call_argument entry)
+            bindings;
           List.fold_left (fun env'' (param, entry) -> Env.bind env'' param entry) env' bindings
         | exception Invalid_argument _ -> raise (Error "TypeError: wrong number of arguments")
       in
@@ -454,6 +462,9 @@ end
 module Smm = struct
   exception Error of string
 
+  let reject_function_argument () =
+    raise (Error "TypeError: function arguments are not supported")
+
   open Smm_pre
 
   type exp = eid * change_fn * ebody
@@ -523,6 +534,10 @@ module Smm = struct
     | Function (fid, params, body, cenv) -> (fid, params, body, cenv)
     | Addr _ -> raise (Error "TypeError: not a function")
 
+  let validate_call_argument = function
+    | Addr _ -> ()
+    | Function _ -> reject_function_argument ()
+
   let rec free_vars exclude e =
     let (eid, _, e') = e in
     begin
@@ -585,6 +600,14 @@ module Smm = struct
 
   let rec eval_with_state state (mem: memory) (env: env) (ptrace: trace) (cenv: change_env) (ctrace: change_trace) (e: exp): (value * memory * trace * change_trace) =
     let (eid, change_fn, e') = e in
+    begin
+      match e' with
+      | CALL (_, ids) ->
+        List.iter
+          (fun id -> Env.lookup env id |> validate_call_argument)
+          ids
+      | _ -> ()
+    end;
     let result =
       let change = change_fn (ptrace, cenv, emptyTrace) |> cent_change in
       let early_return = begin
