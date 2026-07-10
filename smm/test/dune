@@ -2,3 +2,7 @@
  (deps
   ../bin/main.exe
   (glob_files *.s--)))
+
+(test
+ (name eval_api)
+ (libraries smm_))

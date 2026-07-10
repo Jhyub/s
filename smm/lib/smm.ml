@@ -562,7 +562,7 @@ module Smm = struct
   (*
     mem: the memory we always use
     env: the environment we always use
-    ptrace: previous trace. "Previous" is defined as the most recent `eval` call against this expression.
+    ptrace: previous trace for the current evaluation domain. Function bodies use the trace from their most recent completed evaluation.
     cenv: change environment, describes the change of values compared to the "previous" trace.
     e: the expression we are evaluating
 
@@ -575,7 +575,7 @@ module Smm = struct
 
     value: the value of the expression
     memory: updated memory
-    trace: the new trace we are building, which will be used for the next evaluation
+    trace: the trace produced by the current traversal
     change_trace: the change trace we are building & using to provide additional change information on the fly
   *)
   type eval_state = {
@@ -802,12 +802,12 @@ module Smm = struct
     end;
     result
 
-  let eval (mem: memory) (env: env) (ptrace: trace) (cenv: change_env) (ctrace: change_trace) (e: exp): (value * memory * trace * change_trace) =
+  let eval (e: exp): (value * memory * trace * change_trace) =
     let state = {
       function_traces = Hashtbl.create 16;
       active_trace = None;
     } in
-    eval_with_state state mem env ptrace cenv ctrace e
+    eval_with_state state emptyMemory Env.empty emptyTrace emptyChangeEnv Cache.empty e
 
 
 

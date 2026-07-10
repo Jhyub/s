@@ -29,15 +29,7 @@ let () =
       Printf.eprintf "Syntax error\n%!";
       exit 1
   in
-  match
-    Smm.Smm.eval
-      Smm.Smm_pre.emptyMemory
-      Smm.Env.empty
-      Smm.Smm_pre.emptyTrace
-      Smm.Smm_pre.emptyChangeEnv
-      Smm.Cache.empty
-      pgm
-  with
+  match Smm.Smm.eval pgm with
   | v, _, _, _ -> print_endline (Pp.string_of_value v)
   | exception Smm.Smm.Error msg ->
     Printf.eprintf "Error: %s\n%!" msg;
