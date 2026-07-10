@@ -1,0 +1,6 @@
+let t := true in
+let f := false in
+let a := 5 in
+let b := 9 in
+let fn h(c, x) => if c then x + 1 else 0 in
+h(t, a) + h(f, b) + h(t, b)

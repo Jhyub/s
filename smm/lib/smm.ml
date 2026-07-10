@@ -334,14 +334,14 @@ module Smm_pre = struct
               | _, _ -> Value (Unknown)
             end
           | MUL (e1, e2) ->
-            let (eid1, _) = e1 in
-            let (eid2, _) = e2 in
+            (* let (eid1, _) = e1 in *)
+            (* let (eid2, _) = e2 in *)
             let ce1 = eval_change e1 pcc |> cent_value in
             let ce2 = eval_change e2 pcc |> cent_value in
             begin
               match ce1, ce2 with
               | Same, Same -> Value (Same)
-              | Same, Diff | Same, Unknown -> begin
+              (* | Same, Diff | Same, Unknown -> begin
                 match Cache.lookup ptrace (Eid eid1) with
                 | Some (Num 0) -> Value (Same)
                 | _ -> Value (ce2)
@@ -350,22 +350,22 @@ module Smm_pre = struct
                 match Cache.lookup ptrace (Eid eid2) with
                 | Some (Num 0) -> Value (Same)
                 | _ -> Value (ce1)
-              end
+              end *)
               | _, _ -> Value (Unknown)
             end
           | DIV (e1, e2) ->
-            let (eid1, _) = e1 in
+            (* let (eid1, _) = e1 in *)
             let (eid2, _) = e2 in
             let ce1 = eval_change e1 pcc |> cent_value in
             let ce2 = eval_change e2 pcc |> cent_value in
             begin
               match ce1, ce2 with
               | Same, Same -> Value (Same)
-              | Same, _ -> begin
+              (* | Same, _ -> begin
                 match Cache.lookup ptrace (Eid eid1) with
                 | Some (Num 0) -> Value (Same)
                 | _ -> Value (ce2)
-              end 
+              end  *)
               | Diff, Same | Unknown, Same -> begin
                 match Cache.lookup ptrace (Eid eid2) with
                 | Some (Num 1) -> Value (ce1)
@@ -578,22 +578,28 @@ module Smm = struct
     trace: the new trace we are building, which will be used for the next evaluation
     change_trace: the change trace we are building & using to provide additional change information on the fly
   *)
-  let rec eval (mem: memory) (env: env) (ptrace: trace) (cenv: change_env) (ctrace: change_trace) (e: exp): (value * memory * trace * change_trace) =
+  type eval_state = {
+    function_traces : (fid, trace) Hashtbl.t;
+    mutable active_trace : trace option;
+  }
+
+  let rec eval_with_state state (mem: memory) (env: env) (ptrace: trace) (cenv: change_env) (ctrace: change_trace) (e: exp): (value * memory * trace * change_trace) =
     let (eid, change_fn, e') = e in
-    let change = change_fn (ptrace, cenv, emptyTrace) |> cent_change in
-    let early_return = begin
-      match change with
-      | Same ->
-        debug_same_hit eid e';
-        Cache.lookup ptrace (Eid eid)
-      | Unknown -> None
-      | Diff -> None
-    end in
-    match early_return with
-    | Some ret ->
-      debug_reuse_hit eid e';
-      (ret, mem, Cache.bind ptrace (Eid eid) ret, emptyTrace)
-    | None -> begin
+    let result =
+      let change = change_fn (ptrace, cenv, emptyTrace) |> cent_change in
+      let early_return = begin
+        match change with
+        | Same ->
+          debug_same_hit eid e';
+          Cache.lookup ptrace (Eid eid)
+        | Unknown -> None
+        | Diff -> None
+      end in
+      match early_return with
+      | Some ret ->
+        debug_reuse_hit eid e';
+        (ret, mem, Cache.bind ptrace (Eid eid) ret, emptyTrace)
+      | None -> begin
       (* Literals *)
       let aux x = (x, mem, Cache.bind ptrace (Eid eid) x, emptyTrace) in
       (* We re-evaluate the change with additional information from new ctrace, *)
@@ -629,50 +635,59 @@ module Smm = struct
         let v = Mem.load mem (entry_addr (Env.lookup env x)) in
         (v, mem, Cache.bind ptrace (Eid eid) v, Cache.bind emptyTrace eid (Env.lookup cenv x))
       | ADD (e1, e2) ->
-        let (v1, mem1, trace1, ctrace1) = eval mem env ptrace cenv ctrace e1 in
-        let (v2, mem2, trace2, ctrace2) = eval mem1 env trace1 cenv ctrace1 e2 in
+        let (v1, mem1, trace1, ctrace1) = eval_with_state state mem env ptrace cenv ctrace e1 in
+        let (v2, mem2, trace2, ctrace2) = eval_with_state state mem1 env trace1 cenv ctrace1 e2 in
         aux'' (Num (value_int v1 + value_int v2)) mem2 trace2 ctrace2
       | SUB (e1, e2) ->
-        let (v1, mem1, trace1, ctrace1) = eval mem env ptrace cenv ctrace e1 in
-        let (v2, mem2, trace2, ctrace2) = eval mem1 env trace1 cenv ctrace1 e2 in
+        let (v1, mem1, trace1, ctrace1) = eval_with_state state mem env ptrace cenv ctrace e1 in
+        let (v2, mem2, trace2, ctrace2) = eval_with_state state mem1 env trace1 cenv ctrace1 e2 in
         aux'' (Num (value_int v1 - value_int v2)) mem2 trace2 ctrace2
       | MUL (e1, e2) ->
-        let (v1, mem1, trace1, ctrace1) = eval mem env ptrace cenv ctrace e1 in
-        let (v2, mem2, trace2, ctrace2) = eval mem1 env trace1 cenv ctrace1 e2 in
+        let (v1, mem1, trace1, ctrace1) = eval_with_state state mem env ptrace cenv ctrace e1 in
+        let (v2, mem2, trace2, ctrace2) = eval_with_state state mem1 env trace1 cenv ctrace1 e2 in
         aux'' (Num (value_int v1 * value_int v2)) mem2 trace2 ctrace2
       | DIV (e1, e2) ->
-        let (v1, mem1, trace1, ctrace1) = eval mem env ptrace cenv ctrace e1 in
-        let (v2, mem2, trace2, ctrace2) = eval mem1 env trace1 cenv ctrace1 e2 in
+        let (v1, mem1, trace1, ctrace1) = eval_with_state state mem env ptrace cenv ctrace e1 in
+        let (v2, mem2, trace2, ctrace2) = eval_with_state state mem1 env trace1 cenv ctrace1 e2 in
         aux'' (Num (value_int v1 / value_int v2)) mem2 trace2 ctrace2
       | MOD (e1, e2) ->
-        let (v1, mem1, trace1, ctrace1) = eval mem env ptrace cenv ctrace e1 in
-        let (v2, mem2, trace2, ctrace2) = eval mem1 env trace1 cenv ctrace1 e2 in
+        let (v1, mem1, trace1, ctrace1) = eval_with_state state mem env ptrace cenv ctrace e1 in
+        let (v2, mem2, trace2, ctrace2) = eval_with_state state mem1 env trace1 cenv ctrace1 e2 in
         aux'' (Num (value_int v1 mod value_int v2)) mem2 trace2 ctrace2
       | EQUAL (e1, e2) ->
-        let (v1, mem1, trace1, ctrace1) = eval mem env ptrace cenv ctrace e1 in
-        let (v2, mem2, trace2, ctrace2) = eval mem1 env trace1 cenv ctrace1 e2 in
+        let (v1, mem1, trace1, ctrace1) = eval_with_state state mem env ptrace cenv ctrace e1 in
+        let (v2, mem2, trace2, ctrace2) = eval_with_state state mem1 env trace1 cenv ctrace1 e2 in
         aux'' (Bool (eq v1 v2)) mem2 trace2 ctrace2
       | LESS (e1, e2) ->
-        let (v1, mem1, trace1, ctrace1) = eval mem env ptrace cenv ctrace e1 in
-        let (v2, mem2, trace2, ctrace2) = eval mem1 env trace1 cenv ctrace1 e2 in
+        let (v1, mem1, trace1, ctrace1) = eval_with_state state mem env ptrace cenv ctrace e1 in
+        let (v2, mem2, trace2, ctrace2) = eval_with_state state mem1 env trace1 cenv ctrace1 e2 in
         aux'' (Bool (value_int v1 < value_int v2)) mem2 trace2 ctrace2
       | NOT e ->
-        let (v, mem1, trace1, ctrace1) = eval mem env ptrace cenv ctrace e in
+        let (v, mem1, trace1, ctrace1) = eval_with_state state mem env ptrace cenv ctrace e in
         aux'' (Bool (not (value_bool v))) mem1 trace1 ctrace1
       | IF (e1, e2, e3) ->
-        let (v1, mem1, trace1, ctrace1) = eval mem env ptrace cenv ctrace e1 in
-        let (v2, mem2, trace2, ctrace2) = eval mem1 env trace1 cenv ctrace1 e2 in
-        let (v3, mem3, trace3, ctrace3) = eval mem2 env trace2 cenv ctrace2 e3 in
-        aux'' (if value_bool v1 then v2 else v3) mem3 trace3 ctrace3
+        let (v1, mem1, trace1, ctrace1) = eval_with_state state mem env ptrace cenv ctrace e1 in
+        if value_bool v1 then
+          let (v2, mem2, trace2, ctrace2) = eval_with_state state mem1 env trace1 cenv ctrace1 e2 in
+          aux'' v2 mem2 trace2 ctrace2
+        else
+          let (v3, mem3, trace3, ctrace3) = eval_with_state state mem1 env trace1 cenv ctrace1 e3 in
+          aux'' v3 mem3 trace3 ctrace3
       | CALL (f, ids) ->
         (* We do not run additional evaluations for 'call' itself, *)
         (* so early return is enough. *)
         let (fid, params, body, env') = Env.lookup env f |> entry_function in
-        let (_, (_, _, change_fn', cenv')) = Env.lookup cenv f |> cent_function in
+        let (_, (_, _, _, cenv')) = Env.lookup cenv f |> cent_function in
+        let fn_ptrace =
+          match Hashtbl.find_opt state.function_traces fid with
+          | Some trace -> trace
+          | None -> emptyTrace
+        in
+        let arguments = List.combine ids params in
         (* Compute change for each argument *)
         (* CALL is a point of change propagation. <- is this inevitable? *)
         let aux''' (id, param) = begin
-          let v_old = Cache.lookup ptrace (FnArg (fid, param)) in
+          let v_old = Cache.lookup fn_ptrace (FnArg (fid, param)) in
           let v = Mem.load mem (entry_addr (Env.lookup env id)) in
           match v_old with
           | Some v_old ->
@@ -686,9 +701,9 @@ module Smm = struct
           let v = Mem.load mem (entry_addr (Env.lookup env id)) in
           Cache.bind trace (FnArg (fid, param)) v
         end in
-        let changes = List.map aux''' (List.combine ids params) in
+        let changes = List.map aux''' arguments in
         let changes' = List.combine params changes in
-        let trace = List.fold_left aux'''' ptrace (List.combine ids params) in
+        let fresh_trace = List.fold_left aux'''' emptyTrace arguments in
         let cenv'' = List.fold_left (fun cenv (id, change) -> Env.bind cenv id (Value change)) cenv' changes' in
         let entries = ids |> List.map (Env.lookup env) in
         let env'' =
@@ -698,11 +713,25 @@ module Smm = struct
               List.fold_left (fun env' (param, entry) -> Env.bind env' param entry) env' bindings
             | exception Invalid_argument _ -> raise (Error "TypeError: wrong number of arguments")
             end
-          in
-        let (v, mem', trace', ctrace') = eval mem env'' trace cenv'' ctrace body in
-        aux' change_fn' cenv'' v mem' trace' ctrace' (* Not sure if it is fine to run with outer ptrace here *)
+        in
+        let caller_trace = state.active_trace in
+        let ((v, mem', _, _), completed_trace) =
+          Fun.protect
+            ~finally:(fun () -> state.active_trace <- caller_trace)
+            (fun () ->
+              state.active_trace <- Some fresh_trace;
+              let result = eval_with_state state mem env'' fn_ptrace cenv'' emptyTrace body in
+              let completed_trace =
+                match state.active_trace with
+                | Some trace -> trace
+                | None -> assert false
+              in
+              (result, completed_trace))
+        in
+        Hashtbl.replace state.function_traces fid completed_trace;
+        aux'' v mem' ptrace ctrace
       | LET (x, e1, e2) ->
-        let (v1, mem1, trace1, ctrace1) = eval mem env ptrace cenv ctrace e1 in
+        let (v1, mem1, trace1, ctrace1) = eval_with_state state mem env ptrace cenv ctrace e1 in
         (* LET is also a point of change propagation.*)
         let (eid1, change_fn1, _) = e1 in 
         let change' = change_fn1 (ptrace, cenv, ctrace1) |> cent_change in
@@ -742,7 +771,7 @@ module Smm = struct
           | Some v' ->
             debug_reuse_hit eid e';
             (v', mem1, Cache.bind trace1 (Eid eid) v', ctrace1')
-          | None -> eval mem3 env' trace1 cenv' ctrace1' e2 |> fun (v, mem, trace, ctrace) -> (v, mem, Cache.bind trace (Eid eid) v, ctrace)
+          | None -> eval_with_state state mem3 env' trace1 cenv' ctrace1' e2 |> fun (v, mem, trace, ctrace) -> (v, mem, Cache.bind trace (Eid eid) v, ctrace)
         end
       | LETFN (fid, f, params, body, e1) ->
         (* We do not run additional evaluations for 'letfn' itself, *)
@@ -762,8 +791,23 @@ module Smm = struct
         let lit_change = List.fold_left aux Same body_fvs in
         let (eidb, cfnb, ebodyb) = body in
         let cenv' = Env.bind cenv f (Function (lit_change, (fid, params, cfnb, cenv))) in
-        eval mem env' ptrace cenv' ctrace e1 |> fun (v, mem, trace, ctrace) -> (v, mem, Cache.bind trace (Eid eid) v, ctrace)
-    end
+        eval_with_state state mem env' ptrace cenv' ctrace e1 |> fun (v, mem, trace, ctrace) -> (v, mem, Cache.bind trace (Eid eid) v, ctrace)
+      end
+    in
+    let (v, _, _, _) = result in
+    begin
+      match state.active_trace with
+      | Some trace -> state.active_trace <- Some (Cache.bind trace (Eid eid) v)
+      | None -> ()
+    end;
+    result
+
+  let eval (mem: memory) (env: env) (ptrace: trace) (cenv: change_env) (ctrace: change_trace) (e: exp): (value * memory * trace * change_trace) =
+    let state = {
+      function_traces = Hashtbl.create 16;
+      active_trace = None;
+    } in
+    eval_with_state state mem env ptrace cenv ctrace e
 
 
 

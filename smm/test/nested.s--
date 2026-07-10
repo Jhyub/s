@@ -1,0 +1,6 @@
+let a := 5 in
+let one := 1 in
+let two := 2 in
+let fn g(x) => x + 1 in
+let fn h(x, k) => x + g(x) * k in
+h(a, one) + h(a, two)
