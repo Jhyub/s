@@ -508,23 +508,27 @@ module Smm = struct
     | LET _ -> "LET"
     | LETFN _ -> "LETFN"
 
-  let debug_same_hit eid ebody =
-    prerr_string
-      ("[Smm.eval] Same hit: eid="
-       ^ string_of_int eid
-       ^ " expr="
-       ^ string_of_ebody_type ebody
-       ^ "\n");
-    flush stderr
+  let debug_same_hit enabled eid ebody =
+    if enabled then begin
+      prerr_string
+        ("[Smm.eval] Same hit: eid="
+         ^ string_of_int eid
+         ^ " expr="
+         ^ string_of_ebody_type ebody
+         ^ "\n");
+      flush stderr
+    end
 
-  let debug_reuse_hit eid ebody =
-    prerr_string
-      ("[Smm.eval] Reuse hit: eid="
-       ^ string_of_int eid
-       ^ " expr="
-       ^ string_of_ebody_type ebody
-       ^ "\n");
-    flush stderr
+  let debug_reuse_hit enabled eid ebody =
+    if enabled then begin
+      prerr_string
+        ("[Smm.eval] Reuse hit: eid="
+         ^ string_of_int eid
+         ^ " expr="
+         ^ string_of_ebody_type ebody
+         ^ "\n");
+      flush stderr
+    end
 
   let entry_addr entry =
     match entry with Addr l -> l | Function _ -> raise (Error "TypeError: not a value")
@@ -596,6 +600,7 @@ module Smm = struct
   type eval_state = {
     function_traces : (fid, trace) Hashtbl.t;
     mutable active_trace : trace option;
+    debug : bool;
   }
 
   let rec eval_with_state state (mem: memory) (env: env) (ptrace: trace) (cenv: change_env) (ctrace: change_trace) (e: exp): (value * memory * trace * change_trace) =
@@ -613,14 +618,14 @@ module Smm = struct
       let early_return = begin
         match change with
         | Same ->
-          debug_same_hit eid e';
+          debug_same_hit state.debug eid e';
           Cache.lookup ptrace (Eid eid)
         | Unknown -> None
         | Diff -> None
       end in
       match early_return with
       | Some ret ->
-        debug_reuse_hit eid e';
+        debug_reuse_hit state.debug eid e';
         (ret, mem, Cache.bind ptrace (Eid eid) ret, emptyTrace)
       | None -> begin
       (* Literals *)
@@ -634,10 +639,10 @@ module Smm = struct
         let trace' = Cache.bind trace (Eid eid) v in
         match change' with
         | Same ->
-          debug_same_hit eid e';
+          debug_same_hit state.debug eid e';
           let v = begin
             match Cache.lookup ptrace (Eid eid) with
-            | Some v -> debug_reuse_hit eid e'; v
+            | Some v -> debug_reuse_hit state.debug eid e'; v
             | None -> v
           end in
           (v, mem, trace', ctrace)
@@ -715,7 +720,7 @@ module Smm = struct
           match v_old with
           | Some v_old ->
             if eq v v_old then begin
-              debug_same_hit eid e';
+              debug_same_hit state.debug eid e';
               Same
             end else Diff
           | None -> Unknown
@@ -761,7 +766,7 @@ module Smm = struct
         let change'' = begin
           match change' with
           | Same ->
-            debug_same_hit eid e';
+            debug_same_hit state.debug eid e';
             Same
           | Diff -> Diff
           | Unknown ->
@@ -785,14 +790,14 @@ module Smm = struct
         let v' = begin
           match change' with
           | Same ->
-            debug_same_hit eid e';
+            debug_same_hit state.debug eid e';
             Cache.lookup ptrace (Eid eid)
           | Diff | Unknown -> None
         end in
         begin
           match v' with
           | Some v' ->
-            debug_reuse_hit eid e';
+            debug_reuse_hit state.debug eid e';
             (v', mem1, Cache.bind trace1 (Eid eid) v', ctrace1')
           | None -> eval_with_state state mem3 env' trace1 cenv' ctrace1' e2 |> fun (v, mem, trace, ctrace) -> (v, mem, Cache.bind trace (Eid eid) v, ctrace)
         end
@@ -809,7 +814,7 @@ module Smm = struct
           let c = Env.lookup cenv id |> cent_change in
           match change, c with
           | Same, Same ->
-            debug_same_hit eid e';
+            debug_same_hit state.debug eid e';
             Same
           | _, Diff -> Diff
           | _, _ -> Unknown
@@ -828,10 +833,11 @@ module Smm = struct
     end;
     result
 
-  let eval (e: exp): (value * memory * trace * change_trace) =
+  let eval ?(debug = true) (e: exp): (value * memory * trace * change_trace) =
     let state = {
       function_traces = Hashtbl.create 16;
       active_trace = None;
+      debug;
     } in
     eval_with_state state emptyMemory Env.empty emptyTrace emptyChangeEnv Cache.empty e
 

@@ -1,8 +1,13 @@
 (cram
  (deps
   ../bin/main.exe
+  debug_mode.exe
   (glob_files *.s--)))
 
 (test
  (name eval_api)
+ (libraries smm_))
+
+(executable
+ (name debug_mode)
  (libraries smm_))

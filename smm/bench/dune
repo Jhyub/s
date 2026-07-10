@@ -1,0 +1,23 @@
+(library
+ (name smm_bench_workloads)
+ (wrapped false)
+ (modules workloads)
+ (libraries unix))
+
+(executable
+ (name generate)
+ (modules generate)
+ (libraries smm_bench_workloads))
+
+(executable
+ (name run_benchmarks)
+ (modules run_benchmarks)
+ (libraries smm_bench_workloads smm_ unix))
+
+(test
+ (name workloads_test)
+ (modules workloads_test)
+ (libraries smm_bench_workloads smm_))
+
+(cram
+ (deps run_benchmarks.exe))
