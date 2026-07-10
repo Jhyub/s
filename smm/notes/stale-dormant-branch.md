@@ -1,8 +1,9 @@
 # Stale dormant-branch entries under lazy IF
 
-*Status: confirmed wrong-value bug, unfixed. Verified by differential testing
+~~*Status: confirmed wrong-value bug, unfixed. Verified by differential testing
 against `Smm_pre.run` on 2026-07-10 (working tree with lazy IF and the DIV
-zero-refinement removed).*
+zero-refinement removed).*~~
+*Status: fixed.*
 
 ## Symptom
 

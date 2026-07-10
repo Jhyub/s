@@ -1,0 +1,11 @@
+let one := 1 in
+let zero := 0 in
+let yes := true in
+let no := false in
+let fn outer(p, call_inner) =>
+  let fn inner() => p / p in
+  if call_inner then inner() else 0
+in
+let first := outer(one, yes) in
+let skipped := outer(zero, no) in
+outer(zero, yes)

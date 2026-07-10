@@ -777,6 +777,9 @@ module Smm = struct
         (* We do not run additional evaluations for 'letfn' itself, *)
         (* so early return is enough. *)
         (* 왜 cenv maintain하는 코드가 둘 다에서 있는 것 같지? *)
+        (* A dynamically created closure must not reuse a trace collected by
+           an older activation of the same static function definition. *)
+        Hashtbl.remove state.function_traces fid;
         let env' = Env.bind env f (Function (fid, params, body, env)) in
         let body_fvs = free_vars params body in
         let aux change id = begin

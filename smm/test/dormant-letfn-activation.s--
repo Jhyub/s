@@ -1,0 +1,13 @@
+let one := 1 in
+let two := 2 in
+let yes := true in
+let no := false in
+let fn outer(p, make_and_call) =>
+  if make_and_call then
+    let fn inner() => p + 1 in
+    inner()
+  else 0
+in
+let first := outer(one, yes) in
+let skipped := outer(two, no) in
+outer(two, yes)

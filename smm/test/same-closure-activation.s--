@@ -1,0 +1,3 @@
+let p := 1 in
+let fn inner() => p + 1 in
+inner() + inner()

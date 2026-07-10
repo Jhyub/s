@@ -18,3 +18,18 @@
 
   $ ../bin/main.exe nested.s-- 2>&1 >/dev/null | grep -c 'Reuse hit:.*expr=CALL'
   1
+
+  $ ../bin/main.exe closure-activation.s-- 2>/dev/null
+  3
+
+  $ ../bin/main.exe dormant-letfn-activation.s-- 2>/dev/null
+  3
+
+  $ ../bin/main.exe closure-activation-exception.s-- 2>&1 >/dev/null | grep -F 'Error: division by zero'
+  Error: division by zero
+
+  $ ../bin/main.exe same-closure-activation.s-- 2>/dev/null
+  4
+
+  $ ../bin/main.exe same-closure-activation.s-- 2>&1 >/dev/null | grep -c 'Reuse hit:.*expr=ADD'
+  1
