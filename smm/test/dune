@@ -8,6 +8,10 @@
  (name eval_api)
  (libraries smm_))
 
+(test
+ (name cache_test)
+ (libraries smm_))
+
 (executable
  (name debug_mode)
  (libraries smm_))
