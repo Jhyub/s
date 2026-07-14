@@ -350,142 +350,175 @@ module Smm_pre = struct
       | CALL (f, ids) -> List.fold_left (fun ret id -> if List.mem id exclude then ret else id :: ret) [] (f :: ids)
     end |> keep_unique
     
-  let rec eval_change (e: exp): change_fn =
-    let (eid, e') = e in
-    (* Previous (Value) Trace, Change Environment, Change Trace *)
-    fun pcc -> begin
-      let (ptrace, cenv, ctrace) = pcc in
-      match Cache.lookup ctrace eid with
-      | Some entry -> entry
-      | None ->
-        begin
-          match e' with
-          | NUM _ | TRUE | FALSE -> Value (Same)
-          | VAR x -> Env.lookup cenv x
-          | ADD (e1, e2) | SUB (e1, e2) ->
-            let ce1 = eval_change e1 pcc |> cent_value in
-            let ce2 = eval_change e2 pcc |> cent_value in
+  type change_fn_table = (eid, change_fn) Hashtbl.t
+
+  let compile_change_fns (e : exp) : change_fn_table =
+    let change_fns = Hashtbl.create 16 in
+    let rec compile ((eid, e') : exp) =
+      let compute =
+        match e' with
+        | NUM _ | TRUE | FALSE ->
+          fun _ -> Value Same
+        | VAR x ->
+          fun (_, cenv, _) -> Env.lookup cenv x
+        | ADD (e1, e2) | SUB (e1, e2) ->
+          let change1 = compile e1 in
+          let change2 = compile e2 in
+          fun pcc ->
+            let ce1 = change1 pcc |> cent_value in
+            let ce2 = change2 pcc |> cent_value in
             begin
               match ce1, ce2 with
-              | Same, Same -> Value (Same)
-              | Same, Diff | Diff, Same -> Value (Diff)
-              | _, _ -> Value (Unknown)
+              | Same, Same -> Value Same
+              | Same, Diff | Diff, Same -> Value Diff
+              | _, _ -> Value Unknown
             end
-          | MUL (e1, e2) ->
-            (* let (eid1, _) = e1 in *)
-            (* let (eid2, _) = e2 in *)
-            let ce1 = eval_change e1 pcc |> cent_value in
-            let ce2 = eval_change e2 pcc |> cent_value in
+        | MUL (e1, e2) ->
+          let change1 = compile e1 in
+          let change2 = compile e2 in
+          fun pcc ->
+            let ce1 = change1 pcc |> cent_value in
+            let ce2 = change2 pcc |> cent_value in
             begin
               match ce1, ce2 with
-              | Same, Same -> Value (Same)
-              (* | Same, Diff | Same, Unknown -> begin
-                match Cache.lookup ptrace (Eid eid1) with
-                | Some (Num 0) -> Value (Same)
-                | _ -> Value (ce2)
-              end
-              | Diff, Same | Unknown, Same -> begin
-                match Cache.lookup ptrace (Eid eid2) with
-                | Some (Num 0) -> Value (Same)
-                | _ -> Value (ce1)
-              end *)
-              | _, _ -> Value (Unknown)
+              | Same, Same -> Value Same
+              | _, _ -> Value Unknown
             end
-          | DIV (e1, e2) ->
-            (* let (eid1, _) = e1 in *)
-            let (eid2, _) = e2 in
-            let ce1 = eval_change e1 pcc |> cent_value in
-            let ce2 = eval_change e2 pcc |> cent_value in
+        | DIV (e1, e2) ->
+          let (eid2, _) = e2 in
+          let change1 = compile e1 in
+          let change2 = compile e2 in
+          fun ((ptrace, _, _) as pcc) ->
+            let ce1 = change1 pcc |> cent_value in
+            let ce2 = change2 pcc |> cent_value in
             begin
               match ce1, ce2 with
-              | Same, Same -> Value (Same)
-              (* | Same, _ -> begin
-                match Cache.lookup ptrace (Eid eid1) with
-                | Some (Num 0) -> Value (Same)
-                | _ -> Value (ce2)
-              end  *)
-              | Diff, Same | Unknown, Same -> begin
-                match Cache.lookup ptrace (Eid eid2) with
-                | Some (Num 1) -> Value (ce1)
-                | _ -> Value (Unknown)
-              end
-              | _, _ -> Value (Unknown)
+              | Same, Same -> Value Same
+              | Diff, Same | Unknown, Same ->
+                begin
+                  match Cache.lookup ptrace (Eid eid2) with
+                  | Some (Num 1) -> Value ce1
+                  | _ -> Value Unknown
+                end
+              | _, _ -> Value Unknown
             end
-          | MOD (e1, e2) ->
-            let ce1 = eval_change e1 pcc |> cent_value in
-            let ce2 = eval_change e2 pcc |> cent_value in
+        | MOD (e1, e2) ->
+          let change1 = compile e1 in
+          let change2 = compile e2 in
+          fun pcc ->
+            let ce1 = change1 pcc |> cent_value in
+            let ce2 = change2 pcc |> cent_value in
             begin
               match ce1, ce2 with
-              | Same, Same -> Value (Same)
-              | _, _ -> Value (Unknown)
+              | Same, Same -> Value Same
+              | _, _ -> Value Unknown
             end
-          | EQUAL (e1, e2) ->
-            let ce1 = eval_change e1 pcc |> cent_value in
-            let ce2 = eval_change e2 pcc |> cent_value in
+        | EQUAL (e1, e2) ->
+          let change1 = compile e1 in
+          let change2 = compile e2 in
+          fun ((ptrace, _, _) as pcc) ->
+            let ce1 = change1 pcc |> cent_value in
+            let ce2 = change2 pcc |> cent_value in
             begin
               match ce1, ce2 with
-              | Same, Same -> Value (Same)
-              | Same, Diff | Diff, Same -> begin
-                match Cache.lookup ptrace (Eid eid) with
-                | Some (Bool true) -> Value (Diff)
-                | _ -> Value (Unknown)
-              end
-              | _, _ -> Value (Unknown)
+              | Same, Same -> Value Same
+              | Same, Diff | Diff, Same ->
+                begin
+                  match Cache.lookup ptrace (Eid eid) with
+                  | Some (Bool true) -> Value Diff
+                  | _ -> Value Unknown
+                end
+              | _, _ -> Value Unknown
             end
-          | LESS (e1, e2) ->
-            let ce1 = eval_change e1 pcc |> cent_value in
-            let ce2 = eval_change e2 pcc |> cent_value in
+        | LESS (e1, e2) ->
+          let change1 = compile e1 in
+          let change2 = compile e2 in
+          fun pcc ->
+            let ce1 = change1 pcc |> cent_value in
+            let ce2 = change2 pcc |> cent_value in
             begin
               match ce1, ce2 with
-              | Same, Same -> Value (Same)
-              | _, _ -> Value (Unknown)
+              | Same, Same -> Value Same
+              | _, _ -> Value Unknown
             end
-          | NOT e -> eval_change e pcc
-          | IF (e1, e2, e3) ->
-            let (eid1, _), (eid2, _), (eid3, _) = e1, e2, e3 in
-            let ce1 = eval_change e1 pcc |> cent_value in
-            let ce2 = eval_change e2 pcc |> cent_value in
-            let ce3 = eval_change e3 pcc |> cent_value in
+        | NOT e ->
+          let change = compile e in
+          fun pcc -> change pcc
+        | IF (e1, e2, e3) ->
+          let (eid1, _) = e1 in
+          let change1 = compile e1 in
+          let change2 = compile e2 in
+          let change3 = compile e3 in
+          fun ((ptrace, _, _) as pcc) ->
+            let ce1 = change1 pcc |> cent_value in
+            let ce2 = change2 pcc |> cent_value in
+            let ce3 = change3 pcc |> cent_value in
             begin
               match Cache.lookup ptrace (Eid eid1) with
-              | None -> begin
-                match ce1, ce2, ce3 with
-                | Same, Same, Same -> Value (Same)
-                | _, _, _ -> Value (Unknown)
-              end
-              | Some (Bool b) -> begin
-                match ce1 with
-                | Same -> if b then Value (ce2) else Value (ce3)
-                | Diff | Unknown -> Value (Unknown)
-              end
-              | _ -> Value (Unknown) (* Should not happen *)
+              | None ->
+                begin
+                  match ce1, ce2, ce3 with
+                  | Same, Same, Same -> Value Same
+                  | _, _, _ -> Value Unknown
+                end
+              | Some (Bool b) ->
+                begin
+                  match ce1 with
+                  | Same -> if b then Value ce2 else Value ce3
+                  | Diff | Unknown -> Value Unknown
+                end
+              | _ -> Value Unknown
             end
-          | LET (x, e1, e2) ->
-            let ce1 = eval_change e1 pcc in
+        | LET (x, e1, e2) ->
+          let change1 = compile e1 in
+          let change2 = compile e2 in
+          fun (ptrace, cenv, ctrace) ->
+            let ce1 = change1 (ptrace, cenv, ctrace) in
             let cenv' = Env.bind cenv x ce1 in
-            eval_change e2 (ptrace, cenv', ctrace)
-          | LETFN (fid, f, params, body, e1) ->
-            let body_fvs = free_vars params body in
-            let aux change id = begin
+            change2 (ptrace, cenv', ctrace)
+        | LETFN (fid, f, params, body, e1) ->
+          let body_fvs = free_vars params body in
+          let body_change = compile body in
+          let change1 = compile e1 in
+          fun (ptrace, cenv, ctrace) ->
+            let combine change id =
               let c = Env.lookup cenv id |> cent_change in
               match change, c with
               | Same, Same -> Same
               | _, Diff -> Diff
               | _, _ -> Unknown
-            end in
-            let lit_change = List.fold_left aux Same body_fvs in
-            let cenv' = Env.bind cenv f (Function (lit_change, (fid, params, eval_change body, cenv))) in
-            eval_change e1 (ptrace, cenv', ctrace)
-          | CALL (f, ids) ->
-            let aux change id = begin
+            in
+            let lit_change = List.fold_left combine Same body_fvs in
+            let function_change =
+              Function (lit_change, (fid, params, body_change, cenv))
+            in
+            let cenv' = Env.bind cenv f function_change in
+            change1 (ptrace, cenv', ctrace)
+        | CALL (f, ids) ->
+          fun (_, cenv, _) ->
+            let combine change id =
               let c = Env.lookup cenv id |> cent_change in
               match change, c with
               | Same, Same -> Same
               | _, _ -> Unknown
-            end in
-            Value (List.fold_left aux Same (f :: ids))
-      end
-    end
+            in
+            Value (List.fold_left combine Same (f :: ids))
+      in
+      (* Previous value trace, change environment, and current change trace. *)
+      let change_fn ((_, _, ctrace) as pcc) =
+        match Cache.lookup ctrace eid with
+        | Some entry -> entry
+        | None -> compute pcc
+      in
+      Hashtbl.add change_fns eid change_fn;
+      change_fn
+    in
+    let _root_change = compile e in
+    change_fns
+
+  let eval_change (e : exp) : change_fn =
+    let (eid, _) = e in
+    Hashtbl.find (compile_change_fns e) eid
 
 end
 
@@ -587,25 +620,32 @@ module Smm = struct
       | CALL (f, ids) -> List.fold_left (fun ret id -> if List.mem id exclude then ret else id :: ret) [] (f :: ids)
     end |> keep_unique
 
-  let rec from_pre (e: Smm_pre.exp): exp =
-    let (eid, e') = e in
-    match e' with
-    | Smm_pre.NUM n -> (eid, Smm_pre.eval_change e, NUM n)
-    | Smm_pre.TRUE -> (eid, Smm_pre.eval_change e, TRUE)
-    | Smm_pre.FALSE -> (eid, Smm_pre.eval_change e, FALSE)
-    | Smm_pre.VAR x -> (eid, Smm_pre.eval_change e, VAR x)
-    | Smm_pre.ADD (e1, e2) -> (eid, Smm_pre.eval_change e, ADD (from_pre e1, from_pre e2))
-    | Smm_pre.SUB (e1, e2) -> (eid, Smm_pre.eval_change e, SUB (from_pre e1, from_pre e2))
-    | Smm_pre.MUL (e1, e2) -> (eid, Smm_pre.eval_change e, MUL (from_pre e1, from_pre e2))
-    | Smm_pre.DIV (e1, e2) -> (eid, Smm_pre.eval_change e, DIV (from_pre e1, from_pre e2))
-    | Smm_pre.MOD (e1, e2) -> (eid, Smm_pre.eval_change e, MOD (from_pre e1, from_pre e2))
-    | Smm_pre.EQUAL (e1, e2) -> (eid, Smm_pre.eval_change e, EQUAL (from_pre e1, from_pre e2))
-    | Smm_pre.LESS (e1, e2) -> (eid, Smm_pre.eval_change e, LESS (from_pre e1, from_pre e2))
-    | Smm_pre.NOT e -> (eid, Smm_pre.eval_change e, NOT (from_pre e))
-    | Smm_pre.IF (e1, e2, e3) -> (eid, Smm_pre.eval_change e, IF (from_pre e1, from_pre e2, from_pre e3))
-    | Smm_pre.CALL (f, ids) -> (eid, Smm_pre.eval_change e, CALL (f, ids))
-    | Smm_pre.LET (x, e1, e2) -> (eid, Smm_pre.eval_change e, LET (x, from_pre e1, from_pre e2))
-    | Smm_pre.LETFN (fid, f, params, body, e1) -> (eid, Smm_pre.eval_change e, LETFN (fid, f, params, from_pre body, from_pre e1))
+  let from_pre (e : Smm_pre.exp) : exp =
+    let change_fns = Smm_pre.compile_change_fns e in
+    let rec lower ((eid, e') : Smm_pre.exp) =
+      let change_fn = Hashtbl.find change_fns eid in
+      match e' with
+      | Smm_pre.NUM n -> (eid, change_fn, NUM n)
+      | Smm_pre.TRUE -> (eid, change_fn, TRUE)
+      | Smm_pre.FALSE -> (eid, change_fn, FALSE)
+      | Smm_pre.VAR x -> (eid, change_fn, VAR x)
+      | Smm_pre.ADD (e1, e2) -> (eid, change_fn, ADD (lower e1, lower e2))
+      | Smm_pre.SUB (e1, e2) -> (eid, change_fn, SUB (lower e1, lower e2))
+      | Smm_pre.MUL (e1, e2) -> (eid, change_fn, MUL (lower e1, lower e2))
+      | Smm_pre.DIV (e1, e2) -> (eid, change_fn, DIV (lower e1, lower e2))
+      | Smm_pre.MOD (e1, e2) -> (eid, change_fn, MOD (lower e1, lower e2))
+      | Smm_pre.EQUAL (e1, e2) -> (eid, change_fn, EQUAL (lower e1, lower e2))
+      | Smm_pre.LESS (e1, e2) -> (eid, change_fn, LESS (lower e1, lower e2))
+      | Smm_pre.NOT e -> (eid, change_fn, NOT (lower e))
+      | Smm_pre.IF (e1, e2, e3) ->
+        (eid, change_fn, IF (lower e1, lower e2, lower e3))
+      | Smm_pre.CALL (f, ids) -> (eid, change_fn, CALL (f, ids))
+      | Smm_pre.LET (x, e1, e2) ->
+        (eid, change_fn, LET (x, lower e1, lower e2))
+      | Smm_pre.LETFN (fid, f, params, body, e1) ->
+        (eid, change_fn, LETFN (fid, f, params, lower body, lower e1))
+    in
+    lower e
   
   (* Keep the completed previous trace stable while accumulating this traversal
      in a separate mutable trace. *)
