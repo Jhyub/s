@@ -1,0 +1,6 @@
+let t := true in
+let f := false in
+let a := 5 in
+let b := 9 in
+let fn choose(c, x) => if c then x + 1 else x + 2 in
+choose(t, a) + choose(f, b) + choose(f, b) + choose(t, a)

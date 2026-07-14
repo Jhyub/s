@@ -38,3 +38,13 @@
   [1]
   $ tail -n 1 function-argument.err
   Error: TypeError: function arguments are not supported
+
+Changing arguments and branch choices do not leak memoized results between
+function activations, while an identical consecutive activation still reuses
+the function body's IF result.
+
+  $ ../bin/main.exe memo-arguments-branches.s-- 2>/dev/null
+  34
+
+  $ ../bin/main.exe memo-arguments-branches.s-- 2>&1 >/dev/null | grep -c 'Reuse hit:.*expr=IF'
+  1

@@ -508,7 +508,14 @@ module Smm_pre = struct
       let change_fn ((_, _, ctrace) as pcc) =
         match Cache.lookup ctrace eid with
         | Some entry -> entry
-        | None -> compute pcc
+        | None ->
+          let entry = compute pcc in
+          begin
+            match cent_change entry with
+            | Same | Diff -> Cache.bind ctrace eid entry |> ignore
+            | Unknown -> ()
+          end;
+          entry
       in
       Hashtbl.add change_fns eid change_fn;
       change_fn
@@ -686,7 +693,7 @@ module Smm = struct
       | _ -> ()
     end;
     let result =
-      let change = change_fn (ptrace, cenv, emptyTrace) |> cent_change in
+      let change = change_fn (ptrace, cenv, ctrace) |> cent_change in
       let early_return = begin
         match change with
         | Same ->
@@ -698,10 +705,10 @@ module Smm = struct
       match early_return with
       | Some ret ->
         debug_reuse_hit state.debug eid e';
-        (ret, mem, Cache.bind trace (Eid eid) ret, emptyTrace)
+        (ret, mem, Cache.bind trace (Eid eid) ret, ctrace)
       | None -> begin
       (* Literals *)
-      let aux x = (x, mem, Cache.bind trace (Eid eid) x, emptyTrace) in
+      let aux x = (x, mem, Cache.bind trace (Eid eid) x, ctrace) in
       (* We re-evaluate the change with additional information from new ctrace, *)
       (* and propagate our change information accordingly, *)
       (* only if we need to do (overriding 'Unknown's.) *)
@@ -733,7 +740,7 @@ module Smm = struct
       | FALSE -> aux (Bool false)
       | VAR x ->
         let v = Mem.load mem (entry_addr (Env.lookup env x)) in
-        (v, mem, Cache.bind trace (Eid eid) v, Cache.bind emptyTrace eid (Env.lookup cenv x))
+        (v, mem, Cache.bind trace (Eid eid) v, ctrace)
       | ADD (e1, e2) ->
         let (v1, mem1, trace1, ctrace1) = eval_with_state state mem env ptrace trace cenv ctrace e1 in
         let (v2, mem2, trace2, ctrace2) = eval_with_state state mem1 env ptrace trace1 cenv ctrace1 e2 in
