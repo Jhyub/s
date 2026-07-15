@@ -12,25 +12,47 @@ module Mem = struct
   exception Not_initialized
 
   type 'a content = V of 'a | U
-  type 'a t = M of Loc.t * 'a content list
+  type 'a storage =
+    | Empty
+    | Table of (Loc.t, 'a content) Hashtbl.t
 
-  let empty = M (Loc.base, [])
+  type 'a t = M of Loc.t * 'a storage
 
-  let rec replace_nth l n c =
-    match l with
-    | h :: t -> if n = 1 then c :: t else h :: replace_nth t (n - 1) c
-    | [] -> raise Not_allocated
+  let empty = M (Loc.base, Empty)
+
+  let is_allocated boundary loc =
+    Loc.diff loc Loc.base >= 0 && Loc.diff boundary loc > 0
+
+  let find_content boundary storage loc =
+    if not (is_allocated boundary loc) then raise Not_allocated;
+    match storage with
+    | Empty -> raise Not_allocated
+    | Table table ->
+      match Hashtbl.find_opt table loc with
+      | Some content -> (table, content)
+      | None -> raise Not_allocated
 
   let load (M (boundary, storage)) loc =
-    match List.nth storage (Loc.diff boundary loc - 1) with
+    match snd (find_content boundary storage loc) with
     | V v -> v
     | U -> raise Not_initialized
 
-  let store (M (boundary, storage)) loc content =
-    M (boundary, replace_nth storage (Loc.diff boundary loc) (V content))
+  let store (M (boundary, storage) as memory) loc content =
+    let table, _ = find_content boundary storage loc in
+    Hashtbl.replace table loc (V content);
+    memory
 
   let alloc (M (boundary, storage)) =
-    (boundary, M (Loc.increase boundary 1, U :: storage))
+    let storage =
+      match storage with
+      | Empty -> Table (Hashtbl.create 16)
+      | Table _ -> storage
+    in
+    match storage with
+    | Empty -> assert false
+    | Table table ->
+      Hashtbl.replace table boundary U;
+      (boundary, M (Loc.increase boundary 1, storage))
 end
 
 module Env = struct

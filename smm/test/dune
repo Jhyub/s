@@ -13,6 +13,10 @@
  (libraries smm_))
 
 (test
+ (name mem_test)
+ (libraries smm_))
+
+(test
  (name change_memo_test)
  (libraries smm_))
 
