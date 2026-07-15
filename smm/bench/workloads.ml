@@ -74,6 +74,9 @@ let bucket_shuffle generator count =
 
 let repeated_eight count = Array.init count (fun index -> (index / 8) + 1)
 
+let eight_contiguous_runs count =
+  Array.init count (fun index -> ((index * 8) / count) + 1)
+
 let alternating_extremes count =
   Array.init count (fun index ->
       if index mod 2 = 0 then (index / 2) + 1 else count - (index / 2))
@@ -152,6 +155,41 @@ let heavy = function
   | [ x ] -> (x / 10 * 5) + 2 + (x mod 7)
   | _ -> invalid_arg "heavy: expected one argument"
 
+let staged_modulus = 1_000_003
+
+let staged_arithmetic stages = function
+  | [ x ] ->
+    let rec fold stage value =
+      if stage > stages then value
+      else
+        fold (stage + 1) (((value * 17) + stage) mod staged_modulus)
+    in
+    fold 1 x
+  | _ -> invalid_arg "staged_arithmetic: expected one argument"
+
+let render_staged_body stages =
+  if stages <= 0 then invalid_arg "render_staged_body: non-positive stages";
+  let buffer = Buffer.create (stages * 64) in
+  for stage = 1 to stages do
+    let previous =
+      if stage = 1 then "x" else Printf.sprintf "v_%d" (stage - 1)
+    in
+    Buffer.add_string buffer
+      (Printf.sprintf
+         "  let v_%d := (%s * 17 + %d) %% %d in\n"
+         stage previous stage staged_modulus)
+  done;
+  Buffer.add_string buffer (Printf.sprintf "  v_%d" stages);
+  Buffer.contents buffer
+
+let helper_staged_preamble stages =
+  Printf.sprintf
+    "let fn complex(x) =>\n%s in\nlet fn f(x) => complex(x) in"
+    (render_staged_body stages)
+
+let inline_staged_preamble stages =
+  Printf.sprintf "let fn f(x) =>\n%s in" (render_staged_body stages)
+
 let generate ~calls ~seed =
   if calls <= 0 then invalid_arg "Workloads.generate: calls must be positive";
   let generator = Prng.create seed in
@@ -202,6 +240,9 @@ let generate ~calls ~seed =
   let nested_random = random () in
   let heavy_linear = linear () in
   let heavy_random = random () in
+  let complex_constant = Array.make calls 100 in
+  let complex_linear_misses = linear () in
+  let complex_bursty_eight_runs = eight_contiguous_runs calls in
   [
     make_single "arithmetic_linear" arithmetic_preamble arithmetic_linear
       arithmetic;
@@ -227,6 +268,20 @@ let generate ~calls ~seed =
     make_single "nested_random" nested_preamble nested_random arithmetic;
     make_single "heavy_linear" heavy_preamble heavy_linear heavy;
     make_single "heavy_random" heavy_preamble heavy_random heavy;
+    make_single "complex_16_constant" (helper_staged_preamble 16)
+      complex_constant (staged_arithmetic 16);
+    make_single "complex_24_constant" (helper_staged_preamble 24)
+      complex_constant (staged_arithmetic 24);
+    make_single "complex_32_constant" (helper_staged_preamble 32)
+      complex_constant (staged_arithmetic 32);
+    make_single "complex_64_constant" (helper_staged_preamble 64)
+      complex_constant (staged_arithmetic 64);
+    make_single "complex_64_inline_constant" (inline_staged_preamble 64)
+      complex_constant (staged_arithmetic 64);
+    make_single "complex_32_linear_misses" (helper_staged_preamble 32)
+      complex_linear_misses (staged_arithmetic 32);
+    make_single "complex_64_bursty_eight_runs" (helper_staged_preamble 64)
+      complex_bursty_eight_runs (staged_arithmetic 64);
   ]
 
 let rec ensure_directory path =

@@ -7,7 +7,7 @@ result and left-to-right call order is preserved.
 
 ## Run the suite
 
-Run the default 4,096-call, 16-workload suite as optimized native executables:
+Run the default 4,096-call, 23-workload suite as optimized native executables:
 
 ```sh
 dune exec --profile release bench/run_benchmarks.exe
@@ -43,6 +43,18 @@ random-permutation, constant, repeated-eight, alternating-extremes, and
 equal-quotient bucket-shuffled input orders. Ten more cover ordered and random
 branches, captured constants, stable and changing second arguments, nested
 helper calls, and heavier arithmetic with local intermediate bindings.
+
+Seven workloads isolate the cost of reusing a more expensive function body.
+Their staged kernel starts with the call argument and defines each subsequent
+value with `v_i = (v_(i-1) * 17 + i) % 1_000_003`; stage 1 therefore reads the
+original input as `v_0`. The generated S-- spells every stage as a nested `let`
+binding. Four helper-call variants run 16, 24, 32, or 64 stages with constant
+input `100`. A 64-stage inline control puts the identical kernel directly in
+`f`, while a 32-stage linear-miss control uses unique ascending inputs. The
+64-stage burst control has eight contiguous constant-input runs, each containing
+512 calls at the default 4,096-call size. These controls make cache crossover
+points visible without treating machine-dependent timing as a correctness
+condition.
 
 Generation is deterministic for a given call count and seed, and all random
 variants share the same permutation within a suite. Each generated manifest

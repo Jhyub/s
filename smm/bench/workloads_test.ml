@@ -101,11 +101,11 @@ let () =
   let seed = 12_345 in
   let workloads = Workloads.generate ~calls ~seed in
   let repeated = Workloads.generate ~calls ~seed in
-  if List.length workloads <> 16 then
-    failf "generated %d workloads, expected 16" (List.length workloads);
+  if List.length workloads <> 23 then
+    failf "generated %d workloads, expected 23" (List.length workloads);
   if workloads <> repeated then failwith "generation is not deterministic";
-  let names = Hashtbl.create 16 in
-  let generated_arguments = Hashtbl.create 16 in
+  let names = Hashtbl.create 23 in
+  let generated_arguments = Hashtbl.create 23 in
   List.iter
     (fun workload ->
       if Hashtbl.mem names workload.Workloads.name then
@@ -140,6 +140,8 @@ let () =
   assert_same_expected workloads "captured_linear" "captured_random";
   assert_same_expected workloads "nested_linear" "nested_random";
   assert_same_expected workloads "heavy_linear" "heavy_random";
+  assert_same_expected workloads "complex_64_constant"
+    "complex_64_inline_constant";
   let arguments name = Hashtbl.find generated_arguments name in
   let linear = arguments "arithmetic_linear" in
   let expected_linear = List.init calls (fun index -> [ index + 1 ]) in
@@ -157,4 +159,59 @@ let () =
     [ "branch_random";
       "captured_random";
       "nested_random";
-      "heavy_random" ]
+      "heavy_random" ];
+  let expected_complex_names =
+    [ "complex_16_constant";
+      "complex_24_constant";
+      "complex_32_constant";
+      "complex_64_constant";
+      "complex_64_inline_constant";
+      "complex_32_linear_misses";
+      "complex_64_bursty_eight_runs" ]
+  in
+  let actual_complex_names =
+    List.filter_map
+      (fun workload ->
+        if has_prefix ~prefix:"complex_" workload.Workloads.name then
+          Some workload.name
+        else None)
+      workloads
+  in
+  if actual_complex_names <> expected_complex_names then
+    failwith "complex workloads are missing or are not appended in suite order";
+  let expected_constant = List.init calls (fun _ -> [ 100 ]) in
+  List.iter
+    (fun name ->
+      if arguments name <> expected_constant then
+        failf "%s does not use constant input 100" name)
+    [ "complex_16_constant";
+      "complex_24_constant";
+      "complex_32_constant";
+      "complex_64_constant";
+      "complex_64_inline_constant" ];
+  if arguments "complex_32_linear_misses" <> expected_linear then
+    failwith "complex_32_linear_misses does not use unique ascending inputs";
+  let expected_bursty =
+    List.init calls (fun index -> [ ((index * 8) / calls) + 1 ])
+  in
+  if arguments "complex_64_bursty_eight_runs" <> expected_bursty then
+    failwith "complex_64_bursty_eight_runs does not use eight contiguous runs";
+  List.iter
+    (fun name ->
+      let helper_calls =
+        count_calls "complex" (parse (find name workloads).source)
+      in
+      if helper_calls <> 1 then
+        failf "%s contains %d static helper calls, expected 1" name helper_calls)
+    [ "complex_16_constant";
+      "complex_24_constant";
+      "complex_32_constant";
+      "complex_64_constant";
+      "complex_32_linear_misses";
+      "complex_64_bursty_eight_runs" ];
+  let inline =
+    find "complex_64_inline_constant" workloads
+    |> fun workload -> parse workload.source
+  in
+  if count_calls "complex" inline <> 0 then
+    failwith "complex_64_inline_constant unexpectedly calls the helper"
