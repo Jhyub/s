@@ -14,44 +14,65 @@ module Mem = struct
   type 'a content = V of 'a | U
   type 'a storage =
     | Empty
-    | Table of (Loc.t, 'a content) Hashtbl.t
+    | Array of 'a content array ref
 
   type 'a t = M of Loc.t * 'a storage
 
   let empty = M (Loc.base, Empty)
+  let initial_capacity = 16
+
+  let location_index loc = Loc.diff loc Loc.base
 
   let is_allocated boundary loc =
-    Loc.diff loc Loc.base >= 0 && Loc.diff boundary loc > 0
+    let index = location_index loc in
+    index >= 0 && index < location_index boundary
 
-  let find_content boundary storage loc =
+  let find_cell boundary storage loc =
     if not (is_allocated boundary loc) then raise Not_allocated;
     match storage with
     | Empty -> raise Not_allocated
-    | Table table ->
-      match Hashtbl.find_opt table loc with
-      | Some content -> (table, content)
-      | None -> raise Not_allocated
+    | Array cells ->
+      let index = location_index loc in
+      let cells = !cells in
+      if index >= Array.length cells then raise Not_allocated;
+      (cells, index)
 
   let load (M (boundary, storage)) loc =
-    match snd (find_content boundary storage loc) with
+    let cells, index = find_cell boundary storage loc in
+    match cells.(index) with
     | V v -> v
     | U -> raise Not_initialized
 
   let store (M (boundary, storage) as memory) loc content =
-    let table, _ = find_content boundary storage loc in
-    Hashtbl.replace table loc (V content);
+    let cells, index = find_cell boundary storage loc in
+    cells.(index) <- V content;
     memory
+
+  let ensure_capacity cells index =
+    let current = !cells in
+    if index < Array.length current then current
+    else begin
+      let capacity =
+        max (index + 1) (max initial_capacity (2 * Array.length current))
+      in
+      let grown = Array.make capacity U in
+      Array.blit current 0 grown 0 (Array.length current);
+      cells := grown;
+      grown
+    end
 
   let alloc (M (boundary, storage)) =
     let storage =
       match storage with
-      | Empty -> Table (Hashtbl.create 16)
-      | Table _ -> storage
+      | Empty -> Array (ref (Array.make initial_capacity U))
+      | Array _ -> storage
     in
     match storage with
     | Empty -> assert false
-    | Table table ->
-      Hashtbl.replace table boundary U;
+    | Array cells ->
+      let index = location_index boundary in
+      let cells = ensure_capacity cells index in
+      cells.(index) <- U;
       (boundary, M (Loc.increase boundary 1, storage))
 end
 

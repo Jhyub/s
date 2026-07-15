@@ -85,7 +85,7 @@ let test_invalid_locations () =
   let boundary = Loc.increase location 1 in
   let well_beyond_boundary = Loc.increase boundary 100 in
   let missing_memory =
-    Mem.M (Loc.increase Loc.base 1, Mem.Table (Hashtbl.create 1))
+    Mem.M (Loc.increase Loc.base 1, Mem.Array (ref [||]))
   in
   expect_not_allocated
     "load from empty memory"
@@ -112,11 +112,31 @@ let test_invalid_locations () =
     "store beyond boundary"
     (fun () -> Mem.store memory well_beyond_boundary 1);
   expect_not_allocated
-    "load missing allocated key"
+    "load from undersized storage"
     (fun () -> Mem.load missing_memory Loc.base);
   expect_not_allocated
-    "store missing allocated key"
+    "store into undersized storage"
     (fun () -> Mem.store missing_memory Loc.base 1)
+
+let test_growth_preserves_shared_storage () =
+  let first, ancestor = Mem.alloc Mem.empty in
+  let ancestor = Mem.store ancestor first 0 in
+  let rec allocate_and_store value remaining memory =
+    if remaining = 0 then memory
+    else
+      let location, memory = Mem.alloc memory in
+      let memory = Mem.store memory location value in
+      allocate_and_store (value + 1) (remaining - 1) memory
+  in
+  let descendant = allocate_and_store 1 32 ancestor in
+  let last = Loc.increase Loc.base 32 in
+  expect_load "last value survives growth" 32 descendant last;
+  expect_not_allocated
+    "ancestor boundary survives growth"
+    (fun () -> Mem.load ancestor last);
+  let ancestor = Mem.store ancestor first 99 in
+  expect_load "ancestor sees its replacement after growth" 99 ancestor first;
+  expect_load "descendant shares replacement after growth" 99 descendant first
 
 let test_older_boundary_protection () =
   let first, ancestor = Mem.alloc Mem.empty in
@@ -150,4 +170,5 @@ let () =
   test_initialized_and_uninitialized_loads ();
   test_store_replacement ();
   test_invalid_locations ();
+  test_growth_preserves_shared_storage ();
   test_older_boundary_protection ()
