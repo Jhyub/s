@@ -87,42 +87,77 @@ module Env = struct
 end
 
 module Cache = struct
-  type ('a, 'b) t =
+  type 'a t =
     | Empty
-    | Table of ('a, 'b) Hashtbl.t
+    | Array of 'a option array ref
 
   let empty = Empty
-  let create () = Table (Hashtbl.create 16)
+  let initial_capacity = 16
+  let create () = Array (ref (Array.make initial_capacity None))
+
+  let validate_key key =
+    if key < 0 then invalid_arg "Cache: negative key"
+
+  let ensure_capacity cells key =
+    let current = !cells in
+    if key < Array.length current then current
+    else begin
+      let capacity =
+        max (key + 1) (max initial_capacity (2 * Array.length current))
+      in
+      let grown = Array.make capacity None in
+      Array.blit current 0 grown 0 (Array.length current);
+      cells := grown;
+      grown
+    end
 
   let lookup cache key =
+    validate_key key;
     match cache with
     | Empty -> None
-    | Table table -> Hashtbl.find_opt table key
+    | Array cells ->
+      let cells = !cells in
+      if key < Array.length cells then cells.(key) else None
 
   let bind cache key value =
+    validate_key key;
     let cache =
       match cache with
       | Empty -> create ()
-      | Table _ -> cache
+      | Array _ -> cache
     in
     match cache with
     | Empty -> assert false
-    | Table table ->
-      Hashtbl.replace table key value;
+    | Array cells ->
+      let cells = ensure_capacity cells key in
+      cells.(key) <- Some value;
       cache
 
   let merge cache1 cache2 =
-    let merged = create () in
-    let copy_into source =
-      match source, merged with
-      | Empty, _ -> ()
-      | Table source, Table destination ->
-        Hashtbl.iter (Hashtbl.replace destination) source
-      | Table _, Empty -> assert false
+    let length = function
+      | Empty -> 0
+      | Array cells -> Array.length !cells
     in
-    copy_into cache2;
-    copy_into cache1;
-    merged
+    let capacity = max initial_capacity (max (length cache1) (length cache2)) in
+    let merged = Array.make capacity None in
+    begin
+      match cache2 with
+      | Empty -> ()
+      | Array cells ->
+        let cells = !cells in
+        Array.blit cells 0 merged 0 (Array.length cells)
+    end;
+    begin
+      match cache1 with
+      | Empty -> ()
+      | Array cells ->
+        Array.iteri
+          (fun key -> function
+             | Some value -> merged.(key) <- Some value
+             | None -> ())
+          !cells
+    end;
+    Array (ref merged)
 end
 
 module Smm_pre2 = struct
@@ -165,6 +200,7 @@ module Smm_pre = struct
   type id = string
   type eid = int
   type fid = int
+  type parameter = eid * id
 
   type exp = eid * ebody
   and ebody = 
@@ -183,15 +219,14 @@ module Smm_pre = struct
     | IF of exp * exp * exp (* if-then-else *)
     | CALL of id * id list
     | LET of id * exp * exp
-    | LETFN of fid * id * id list * exp * exp
+    | LETFN of fid * id * parameter list * exp * exp
 
   type program = exp
   type value = Num of int | Bool of bool (* | Pair of (value * value) *)
   and memory = value Mem.t
   and env = (id, entry) Env.t
-  and trace_key = Eid of eid | FnArg of (fid * id)
-  and trace = (trace_key, value) Cache.t
-  and entry = Addr of Loc.t | Function of fid * id list * exp * env
+  and trace = value Cache.t
+  and entry = Addr of Loc.t | Function of fid * parameter list * exp * env
 
   let emptyMemory = Mem.empty
   let emptyEnv = Env.empty
@@ -251,8 +286,10 @@ module Smm_pre = struct
         let (e1', e2') = annotate_pre e1, annotate_pre e2 in
         (ne, LET (x, e1', e2'))
       | Smm_pre2.LETFN (f, params, body, e1) ->
-        let (body', e1') = annotate_pre body, annotate_pre e1 in
-        (ne, LETFN (new_fid (), f, params, body', e1'))
+        let params' = List.map (fun param -> (new_eid (), param)) params in
+        let body' = annotate_pre body in
+        let e1' = annotate_pre e1 in
+        (ne, LETFN (new_fid (), f, params', body', e1'))
     in
     annotate_pre e
 
@@ -334,7 +371,10 @@ module Smm_pre = struct
           List.iter
             (fun (_, entry) -> validate_call_argument entry)
             bindings;
-          List.fold_left (fun env'' (param, entry) -> Env.bind env'' param entry) env' bindings
+          List.fold_left
+            (fun env'' ((_, param), entry) -> Env.bind env'' param entry)
+            env'
+            bindings
         | exception Invalid_argument _ -> raise (Error "TypeError: wrong number of arguments")
       in
       eval mem env'' body
@@ -357,9 +397,11 @@ module Smm_pre = struct
   (* Question: should we make it sound to mark anything as Diff? *)
   type change = Same | Diff | Unknown
   and change_env = (id, change_entry) Env.t
-  and change_trace = (eid, change_entry) Cache.t
+  and change_trace = change_entry Cache.t
   and change_fn = (trace * change_env * change_trace) -> change_entry
-  and change_entry = Value of change | Function of (change * (fid * id list * change_fn * change_env))
+  and change_entry =
+    | Value of change
+    | Function of (change * (fid * parameter list * change_fn * change_env))
   let emptyChangeEnv = Env.empty
 
   let cent_value entry =
@@ -389,7 +431,9 @@ module Smm_pre = struct
       | NOT e -> free_vars exclude e
       | IF (e1, e2, e3) -> free_vars exclude e1 @ free_vars exclude e2 @ free_vars exclude e3
       | LET (x, e1, e2) -> free_vars exclude e1 @ free_vars (x :: exclude) e2
-      | LETFN (fid, f, params, body, e1) -> free_vars (params @ exclude) body @ free_vars (f :: exclude) e1
+      | LETFN (fid, f, params, body, e1) ->
+        let param_names = List.map snd params in
+        free_vars (param_names @ exclude) body @ free_vars (f :: exclude) e1
       | CALL (f, ids) -> List.fold_left (fun ret id -> if List.mem id exclude then ret else id :: ret) [] (f :: ids)
     end |> keep_unique
     
@@ -439,7 +483,7 @@ module Smm_pre = struct
               | Same, Same -> Value Same
               | Diff, Same | Unknown, Same ->
                 begin
-                  match Cache.lookup ptrace (Eid eid2) with
+                  match Cache.lookup ptrace eid2 with
                   | Some (Num 1) -> Value ce1
                   | _ -> Value Unknown
                 end
@@ -467,7 +511,7 @@ module Smm_pre = struct
               | Same, Same -> Value Same
               | Same, Diff | Diff, Same ->
                 begin
-                  match Cache.lookup ptrace (Eid eid) with
+                  match Cache.lookup ptrace eid with
                   | Some (Bool true) -> Value Diff
                   | _ -> Value Unknown
                 end
@@ -497,7 +541,7 @@ module Smm_pre = struct
             let ce2 = change2 pcc |> cent_value in
             let ce3 = change3 pcc |> cent_value in
             begin
-              match Cache.lookup ptrace (Eid eid1) with
+              match Cache.lookup ptrace eid1 with
               | None ->
                 begin
                   match ce1, ce2, ce3 with
@@ -520,7 +564,7 @@ module Smm_pre = struct
             let cenv' = Env.bind cenv x ce1 in
             change2 (ptrace, cenv', ctrace)
         | LETFN (fid, f, params, body, e1) ->
-          let body_fvs = free_vars params body in
+          let body_fvs = free_vars (List.map snd params) body in
           let body_change = compile body in
           let change1 = compile e1 in
           fun (ptrace, cenv, ctrace) ->
@@ -597,10 +641,10 @@ module Smm = struct
     | IF of exp * exp * exp (* if-then-else *)
     | CALL of id * id list
     | LET of id * exp * exp
-    | LETFN of fid * id * id list * exp * exp
+    | LETFN of fid * id * parameter list * exp * exp
 
   type env = (id, entry) Env.t
-  and entry = Addr of Loc.t | Function of fid * id list * exp * env
+  and entry = Addr of Loc.t | Function of fid * parameter list * exp * env
 
   let string_of_ebody_type ebody =
     match ebody with
@@ -666,7 +710,9 @@ module Smm = struct
       | NOT e -> free_vars exclude e
       | IF (e1, e2, e3) -> free_vars exclude e1 @ free_vars exclude e2 @ free_vars exclude e3
       | LET (x, e1, e2) -> free_vars exclude e1 @ free_vars (x :: exclude) e2
-      | LETFN (fid, f, params, body, e1) -> free_vars (params @ exclude) body @ free_vars (f :: exclude) e1
+      | LETFN (fid, f, params, body, e1) ->
+        let param_names = List.map snd params in
+        free_vars (param_names @ exclude) body @ free_vars (f :: exclude) e1
       | CALL (f, ids) -> List.fold_left (fun ret id -> if List.mem id exclude then ret else id :: ret) [] (f :: ids)
     end |> keep_unique
 
@@ -741,29 +787,29 @@ module Smm = struct
         match change with
         | Same ->
           debug_same_hit state.debug eid e';
-          Cache.lookup ptrace (Eid eid)
+          Cache.lookup ptrace eid
         | Unknown -> None
         | Diff -> None
       end in
       match early_return with
       | Some ret ->
         debug_reuse_hit state.debug eid e';
-        (ret, mem, Cache.bind trace (Eid eid) ret, ctrace)
+        (ret, mem, Cache.bind trace eid ret, ctrace)
       | None -> begin
       (* Literals *)
-      let aux x = (x, mem, Cache.bind trace (Eid eid) x, ctrace) in
+      let aux x = (x, mem, Cache.bind trace eid x, ctrace) in
       (* We re-evaluate the change with additional information from new ctrace, *)
       (* and propagate our change information accordingly, *)
       (* only if we need to do (overriding 'Unknown's.) *)
       (* Do not override with 'Unknown' in ctrace. *)
       let aux' change_fn cenv v mem trace ctrace = begin
         let change' = change_fn (ptrace, cenv, ctrace) |> cent_change in
-        let trace' = Cache.bind trace (Eid eid) v in
+        let trace' = Cache.bind trace eid v in
         match change' with
         | Same ->
           debug_same_hit state.debug eid e';
           let v = begin
-            match Cache.lookup ptrace (Eid eid) with
+            match Cache.lookup ptrace eid with
             | Some v -> debug_reuse_hit state.debug eid e'; v
             | None -> v
           end in
@@ -771,7 +817,7 @@ module Smm = struct
         | Diff ->
           (v, mem, trace', ctrace)
         | Unknown -> begin
-          match Cache.lookup ptrace (Eid eid) with
+          match Cache.lookup ptrace eid with
           | Some v' -> (v, mem, trace', Cache.bind ctrace eid (Value (if eq v v' then Same else Diff)))
           | None -> (v, mem, trace', ctrace)
         end
@@ -783,7 +829,7 @@ module Smm = struct
       | FALSE -> aux (Bool false)
       | VAR x ->
         let v = Mem.load mem (entry_addr (Env.lookup env x)) in
-        (v, mem, Cache.bind trace (Eid eid) v, ctrace)
+        (v, mem, Cache.bind trace eid v, ctrace)
       | ADD (e1, e2) ->
         let (v1, mem1, trace1, ctrace1) = eval_with_state state mem env ptrace trace cenv ctrace e1 in
         let (v2, mem2, trace2, ctrace2) = eval_with_state state mem1 env ptrace trace1 cenv ctrace1 e2 in
@@ -836,8 +882,8 @@ module Smm = struct
         let arguments = List.combine ids params in
         (* Compute change for each argument *)
         (* CALL is a point of change propagation. <- is this inevitable? *)
-        let aux''' (id, param) = begin
-          let v_old = Cache.lookup fn_ptrace (FnArg (fid, param)) in
+        let aux''' (id, (param_eid, _)) = begin
+          let v_old = Cache.lookup fn_ptrace param_eid in
           let v = Mem.load mem (entry_addr (Env.lookup env id)) in
           match v_old with
           | Some v_old ->
@@ -847,20 +893,29 @@ module Smm = struct
             end else Diff
           | None -> Unknown
         end in
-        let aux'''' trace (id, param) = begin
+        let aux'''' trace (id, (param_eid, _)) = begin
           let v = Mem.load mem (entry_addr (Env.lookup env id)) in
-          Cache.bind trace (FnArg (fid, param)) v
+          Cache.bind trace param_eid v
         end in
         let changes = List.map aux''' arguments in
         let changes' = List.combine params changes in
         let fresh_trace = List.fold_left aux'''' (Cache.create ()) arguments in
-        let cenv'' = List.fold_left (fun cenv (id, change) -> Env.bind cenv id (Value change)) cenv' changes' in
+        let cenv'' =
+          List.fold_left
+            (fun cenv ((_, param), change) ->
+              Env.bind cenv param (Value change))
+            cenv'
+            changes'
+        in
         let entries = ids |> List.map (Env.lookup env) in
         let env'' =
           begin
             match List.combine params entries with
             | bindings ->
-              List.fold_left (fun env' (param, entry) -> Env.bind env' param entry) env' bindings
+              List.fold_left
+                (fun env' ((_, param), entry) -> Env.bind env' param entry)
+                env'
+                bindings
             | exception Invalid_argument _ -> raise (Error "TypeError: wrong number of arguments")
             end
         in
@@ -895,7 +950,7 @@ module Smm = struct
             Same
           | Diff -> Diff
           | Unknown ->
-            let v1_old = Cache.lookup ptrace (Eid eid1) in
+            let v1_old = Cache.lookup ptrace eid1 in
             begin
               match v1_old with
               | Some v1_old -> if eq v1 v1_old then Same else Diff
@@ -916,15 +971,15 @@ module Smm = struct
           match change' with
           | Same ->
             debug_same_hit state.debug eid e';
-            Cache.lookup ptrace (Eid eid)
+            Cache.lookup ptrace eid
           | Diff | Unknown -> None
         end in
         begin
           match v' with
           | Some v' ->
             debug_reuse_hit state.debug eid e';
-            (v', mem1, Cache.bind trace1 (Eid eid) v', ctrace1')
-          | None -> eval_with_state state mem3 env' ptrace trace1 cenv' ctrace1' e2 |> fun (v, mem, trace, ctrace) -> (v, mem, Cache.bind trace (Eid eid) v, ctrace)
+            (v', mem1, Cache.bind trace1 eid v', ctrace1')
+          | None -> eval_with_state state mem3 env' ptrace trace1 cenv' ctrace1' e2 |> fun (v, mem, trace, ctrace) -> (v, mem, Cache.bind trace eid v, ctrace)
         end
       | LETFN (fid, f, params, body, e1) ->
         (* We do not run additional evaluations for 'letfn' itself, *)
@@ -934,7 +989,7 @@ module Smm = struct
            an older activation of the same static function definition. *)
         Hashtbl.remove state.function_traces fid;
         let env' = Env.bind env f (Function (fid, params, body, env)) in
-        let body_fvs = free_vars params body in
+        let body_fvs = free_vars (List.map snd params) body in
         let aux change id = begin
           let c = Env.lookup cenv id |> cent_change in
           match change, c with
@@ -947,13 +1002,13 @@ module Smm = struct
         let lit_change = List.fold_left aux Same body_fvs in
         let (eidb, cfnb, ebodyb) = body in
         let cenv' = Env.bind cenv f (Function (lit_change, (fid, params, cfnb, cenv))) in
-        eval_with_state state mem env' ptrace trace cenv' ctrace e1 |> fun (v, mem, trace, ctrace) -> (v, mem, Cache.bind trace (Eid eid) v, ctrace)
+        eval_with_state state mem env' ptrace trace cenv' ctrace e1 |> fun (v, mem, trace, ctrace) -> (v, mem, Cache.bind trace eid v, ctrace)
       end
     in
     let (v, _, _, _) = result in
     begin
       match state.active_trace with
-      | Some trace -> state.active_trace <- Some (Cache.bind trace (Eid eid) v)
+      | Some trace -> state.active_trace <- Some (Cache.bind trace eid v)
       | None -> ()
     end;
     result

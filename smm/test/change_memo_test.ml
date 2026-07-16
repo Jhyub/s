@@ -61,9 +61,9 @@ let test_definitive_result_reuse change eid =
   |> expect_change "reused definitive result" change
 
 let test_unknown_refinement () =
-  let root_eid = 200 in
-  let x_eid = 201 in
-  let y_eid = 202 in
+  let root_eid = 0 in
+  let x_eid = 1 in
+  let y_eid = 2 in
   let expression : Pre.exp =
     (root_eid, Pre.ADD ((x_eid, Pre.VAR "x"), (y_eid, Pre.VAR "y")))
   in
@@ -90,7 +90,7 @@ let test_unknown_refinement () =
   refine Pre.Diff
 
 let test_fresh_activation_traces () =
-  let eid = 300 in
+  let eid = 0 in
   let expression : Pre.exp = (eid, Pre.VAR "argument") in
   let change_fn = Pre.eval_change expression in
   let evaluate trace change =
@@ -116,15 +116,15 @@ let new_state () : Optimized.eval_state =
 
 let change_trace_with_sentinel () =
   let ctrace = Cache.create () in
-  Cache.bind ctrace (-1) (Pre.Value Pre.Diff) |> ignore;
+  Cache.bind ctrace 0 (Pre.Value Pre.Diff) |> ignore;
   ctrace
 
 let expect_preserved name ctrace eid =
-  expect_cached (name ^ " sentinel") Pre.Diff ctrace (-1);
+  expect_cached (name ^ " sentinel") Pre.Diff ctrace 0;
   expect_cached (name ^ " node") Pre.Same ctrace eid
 
 let test_literal_trace_preservation () =
-  let eid = 400 in
+  let eid = 1 in
   let expression = Optimized.from_pre (eid, Pre.NUM 7) in
   let ctrace = change_trace_with_sentinel () in
   let value, _, _, returned_ctrace =
@@ -143,10 +143,10 @@ let test_literal_trace_preservation () =
   expect_preserved "literal returned trace" returned_ctrace eid
 
 let test_early_return_trace_preservation () =
-  let eid = 500 in
+  let eid = 1 in
   let expression = Optimized.from_pre (eid, Pre.NUM 11) in
   let ptrace = Cache.create () in
-  Cache.bind ptrace (Pre.Eid eid) (Pre.Num 11) |> ignore;
+  Cache.bind ptrace eid (Pre.Num 11) |> ignore;
   let ctrace = change_trace_with_sentinel () in
   let value, _, _, returned_ctrace =
     Optimized.eval_with_state
@@ -164,7 +164,7 @@ let test_early_return_trace_preservation () =
   expect_preserved "early-return returned trace" returned_ctrace eid
 
 let test_variable_trace_preservation () =
-  let eid = 600 in
+  let eid = 1 in
   let expression = Optimized.from_pre (eid, Pre.VAR "x") in
   let location, memory = Mem.alloc Pre.emptyMemory in
   let memory = Mem.store memory location (Pre.Num 13) in
@@ -187,8 +187,8 @@ let test_variable_trace_preservation () =
   expect_preserved "variable returned trace" returned_ctrace eid
 
 let () =
-  test_definitive_result_reuse Pre.Same 100;
-  test_definitive_result_reuse Pre.Diff 101;
+  test_definitive_result_reuse Pre.Same 0;
+  test_definitive_result_reuse Pre.Diff 1;
   test_unknown_refinement ();
   test_fresh_activation_traces ();
   test_literal_trace_preservation ();
