@@ -183,6 +183,63 @@ let expect_argument_trace name expected trace eid =
   | None ->
     failwith (Printf.sprintf "%s: eid %d is absent" name eid)
 
+let rec annotated_functions ((_, body) : Pre.exp) =
+  match body with
+  | Pre.NUM _ | Pre.TRUE | Pre.FALSE | Pre.VAR _ | Pre.CALL _ -> []
+  | Pre.ADD (left, right)
+  | Pre.SUB (left, right)
+  | Pre.MUL (left, right)
+  | Pre.DIV (left, right)
+  | Pre.MOD (left, right)
+  | Pre.EQUAL (left, right)
+  | Pre.LESS (left, right) ->
+    annotated_functions left @ annotated_functions right
+  | Pre.NOT body -> annotated_functions body
+  | Pre.IF (condition, if_true, if_false) ->
+    annotated_functions condition
+    @ annotated_functions if_true
+    @ annotated_functions if_false
+  | Pre.LET (_, value, body) ->
+    annotated_functions value @ annotated_functions body
+  | Pre.LETFN (fid, name, params, function_body, body) ->
+    (name, fid, params, function_body)
+    :: (annotated_functions function_body @ annotated_functions body)
+
+let function_definition annotated name =
+  match
+    List.find_opt
+      (fun (candidate, _, _, _) -> candidate = name)
+      (annotated_functions annotated)
+  with
+  | Some (_, fid, params, body) -> (fid, params, body)
+  | None -> failwith ("missing annotated function " ^ name)
+
+let single_parameter name = function
+  | [ (eid, _) ] -> eid
+  | _ -> failwith (name ^ ": expected one parameter")
+
+let new_state () : Optimized.eval_state =
+  {
+    function_traces = Hashtbl.create 4;
+    active_trace = None;
+    debug = false;
+  }
+
+let evaluate_with_state state annotated =
+  Optimized.eval_with_state
+    state
+    Pre.emptyMemory
+    Env.empty
+    Pre.emptyTrace
+    (Cache.create ())
+    Pre.emptyChangeEnv
+    (Cache.create ())
+    (Optimized.from_pre annotated)
+
+let cache_storage name = function
+  | Cache.Array storage -> storage
+  | Cache.Empty -> failwith (name ^ ": expected allocated cache storage")
+
 let test_parameter_eids_and_argument_trace () =
   let annotated = Pre.from_pre2 duplicate_numeric_formal_call in
   let ids = annotated_ids annotated |> List.sort Int.compare in
@@ -233,9 +290,190 @@ let test_parameter_eids_and_argument_trace () =
       (Optimized.from_pre annotated)
   in
   expect_num_value "duplicate numeric formals" "Smm.eval" 2 value;
-  let trace = Hashtbl.find state.function_traces fid in
+  let trace =
+    match Optimized.function_previous_trace state fid with
+    | Some trace -> trace
+    | None -> failwith "function did not retain a completed trace"
+  in
   expect_argument_trace "first formal trace" 1 trace first_eid;
   expect_argument_trace "second formal trace" 2 trace second_eid
+
+let alternating_calls =
+  Pre2.LET
+    ( "one",
+      Pre2.NUM 1,
+      Pre2.LET
+        ( "two",
+          Pre2.NUM 2,
+          Pre2.LET
+            ( "three",
+              Pre2.NUM 3,
+              Pre2.LETFN
+                ( "identity",
+                  [ "x" ],
+                  Pre2.VAR "x",
+                  Pre2.LET
+                    ( "first",
+                      Pre2.CALL ("identity", [ "one" ]),
+                      Pre2.LET
+                        ( "second",
+                          Pre2.CALL ("identity", [ "two" ]),
+                          Pre2.CALL ("identity", [ "three" ]) ) ) ) ) ) )
+
+let test_alternating_function_buffers () =
+  let annotated = Pre.from_pre2 alternating_calls in
+  let fid, params, _ = function_definition annotated "identity" in
+  let param_eid = single_parameter "identity" params in
+  let state = new_state () in
+  let value, _, _, _ = evaluate_with_state state annotated in
+  expect_num_value "alternating buffers" "Smm.eval" 3 value;
+  let traces = Hashtbl.find state.function_traces fid in
+  if not traces.has_previous_trace || traces.previous_trace <> 0 then
+    failwith "three calls did not alternate back to the first value buffer";
+  if traces.value_traces.(0) == traces.value_traces.(1) then
+    failwith "function value buffers unexpectedly alias";
+  expect_argument_trace
+    "latest alternating buffer" 3 traces.value_traces.(0) param_eid;
+  expect_argument_trace
+    "previous alternating buffer" 2 traces.value_traces.(1) param_eid;
+  let value_cells =
+    Array.map
+      (fun trace -> (cache_storage "value trace" trace).cells)
+      traces.value_traces
+  in
+  let change_cells = (cache_storage "change trace" traces.change_trace).cells in
+  Optimized.reset_function_trace state fid;
+  if Hashtbl.find state.function_traces fid != traces then
+    failwith "function reset replaced its retained trace state";
+  if traces.has_previous_trace then
+    failwith "function reset left a previous trace active";
+  Array.iteri
+    (fun index trace ->
+      if (cache_storage "reset value trace" trace).cells != value_cells.(index)
+      then failwith "function reset replaced a value backing array";
+      if Cache.lookup trace param_eid <> None then
+        failwith "function reset left a value trace populated")
+    traces.value_traces;
+  if (cache_storage "reset change trace" traces.change_trace).cells
+     != change_cells
+  then failwith "function reset replaced the change backing array"
+
+let nested_calls =
+  Pre2.LET
+    ( "one",
+      Pre2.NUM 1,
+      Pre2.LET
+        ( "five",
+          Pre2.NUM 5,
+          Pre2.LETFN
+            ( "inc",
+              [ "x" ],
+              Pre2.ADD (Pre2.VAR "x", Pre2.VAR "one"),
+              Pre2.LETFN
+                ( "twice",
+                  [ "x" ],
+                  Pre2.LET
+                    ( "incremented",
+                      Pre2.CALL ("inc", [ "x" ]),
+                      Pre2.CALL ("inc", [ "incremented" ]) ),
+                  Pre2.CALL ("twice", [ "five" ]) ) ) ) )
+
+let test_nested_function_buffers () =
+  let annotated = Pre.from_pre2 nested_calls in
+  let inc_fid, inc_params, _ = function_definition annotated "inc" in
+  let twice_fid, twice_params, _ = function_definition annotated "twice" in
+  let state = new_state () in
+  let value, _, _, _ = evaluate_with_state state annotated in
+  expect_num_value "nested function buffers" "Smm.eval" 7 value;
+  let previous fid =
+    match Optimized.function_previous_trace state fid with
+    | Some trace -> trace
+    | None -> failwith "nested call did not complete a function trace"
+  in
+  expect_argument_trace
+    "nested inc argument" 6 (previous inc_fid)
+    (single_parameter "inc" inc_params);
+  expect_argument_trace
+    "nested twice argument" 5 (previous twice_fid)
+    (single_parameter "twice" twice_params)
+
+let dynamic_closures =
+  Pre2.LET
+    ( "one",
+      Pre2.NUM 1,
+      Pre2.LET
+        ( "two",
+          Pre2.NUM 2,
+          Pre2.LETFN
+            ( "outer",
+              [ "x" ],
+              Pre2.LETFN
+                ( "inner",
+                  [],
+                  Pre2.VAR "x",
+                  Pre2.CALL ("inner", []) ),
+              Pre2.LET
+                ( "first",
+                  Pre2.CALL ("outer", [ "one" ]),
+                  Pre2.CALL ("outer", [ "two" ]) ) ) ) )
+
+let test_dynamic_closure_reset () =
+  let annotated = Pre.from_pre2 dynamic_closures in
+  let inner_fid, _, (inner_body_eid, _) =
+    function_definition annotated "inner"
+  in
+  let state = new_state () in
+  let value, _, _, _ = evaluate_with_state state annotated in
+  expect_num_value "dynamic closure reset" "Smm.eval" 2 value;
+  let trace =
+    match Optimized.function_previous_trace state inner_fid with
+    | Some trace -> trace
+    | None -> failwith "dynamic inner call did not complete a trace"
+  in
+  expect_argument_trace
+    "dynamic inner body" 2 trace inner_body_eid
+
+let failing_second_call =
+  Pre2.LET
+    ( "zero",
+      Pre2.NUM 0,
+      Pre2.LET
+        ( "one",
+          Pre2.NUM 1,
+          Pre2.LETFN
+            ( "risky",
+              [ "x" ],
+              Pre2.IF
+                ( Pre2.EQUAL (Pre2.VAR "x", Pre2.VAR "zero"),
+                  Pre2.DIV (Pre2.VAR "one", Pre2.VAR "zero"),
+                  Pre2.VAR "x" ),
+              Pre2.LET
+                ( "first",
+                  Pre2.CALL ("risky", [ "one" ]),
+                  Pre2.CALL ("risky", [ "zero" ]) ) ) ) )
+
+let test_failed_call_preserves_previous_trace () =
+  let annotated = Pre.from_pre2 failing_second_call in
+  let fid, params, _ = function_definition annotated "risky" in
+  let param_eid = single_parameter "risky" params in
+  let state = new_state () in
+  begin
+    match evaluate_with_state state annotated with
+    | _ -> failwith "risky call unexpectedly succeeded"
+    | exception Division_by_zero -> ()
+  end;
+  let traces = Hashtbl.find state.function_traces fid in
+  if not traces.has_previous_trace || traces.previous_trace <> 0 then
+    failwith "failed call replaced the previous value buffer";
+  let previous =
+    match Optimized.function_previous_trace state fid with
+    | Some trace -> trace
+    | None -> failwith "failed call discarded the completed trace"
+  in
+  expect_argument_trace "failed call previous argument" 1 previous param_eid;
+  match state.active_trace with
+  | None -> ()
+  | Some _ -> failwith "failed call did not restore its caller trace"
 
 let () =
   (* Each lowering starts at eid 0; separate eval calls must not share traces. *)
@@ -254,4 +492,8 @@ let () =
   expect_function_argument_error
     "function argument shadowed by a duplicate formal"
     shadowed_duplicate_formal_call;
-  test_parameter_eids_and_argument_trace ()
+  test_parameter_eids_and_argument_trace ();
+  test_alternating_function_buffers ();
+  test_nested_function_buffers ();
+  test_dynamic_closure_reset ();
+  test_failed_call_preserves_previous_trace ()

@@ -87,19 +87,34 @@ module Env = struct
 end
 
 module Cache = struct
+  type 'a storage = {
+    mutable cells : 'a option array;
+    mutable touched : int array;
+    mutable touched_count : int;
+  }
+
   type 'a t =
     | Empty
-    | Array of 'a option array ref
+    | Array of 'a storage
 
   let empty = Empty
   let initial_capacity = 16
-  let create () = Array (ref (Array.make initial_capacity None))
+
+  let create_with_capacities cell_capacity touched_capacity =
+    Array {
+      cells = Array.make cell_capacity None;
+      touched = Array.make touched_capacity 0;
+      touched_count = 0;
+    }
+
+  let create () =
+    create_with_capacities initial_capacity initial_capacity
 
   let validate_key key =
     if key < 0 then invalid_arg "Cache: negative key"
 
-  let ensure_capacity cells key =
-    let current = !cells in
+  let ensure_cell_capacity storage key =
+    let current = storage.cells in
     if key < Array.length current then current
     else begin
       let capacity =
@@ -107,16 +122,34 @@ module Cache = struct
       in
       let grown = Array.make capacity None in
       Array.blit current 0 grown 0 (Array.length current);
-      cells := grown;
+      storage.cells <- grown;
       grown
     end
+
+  let ensure_touched_capacity storage =
+    if storage.touched_count < Array.length storage.touched then ()
+    else begin
+      let current = storage.touched in
+      let capacity = max initial_capacity (2 * Array.length current) in
+      let grown = Array.make capacity 0 in
+      Array.blit current 0 grown 0 (Array.length current);
+      storage.touched <- grown
+    end
+
+  let clear = function
+    | Empty -> ()
+    | Array storage ->
+      for index = 0 to storage.touched_count - 1 do
+        storage.cells.(storage.touched.(index)) <- None
+      done;
+      storage.touched_count <- 0
 
   let lookup cache key =
     validate_key key;
     match cache with
     | Empty -> None
-    | Array cells ->
-      let cells = !cells in
+    | Array storage ->
+      let cells = storage.cells in
       if key < Array.length cells then cells.(key) else None
 
   let bind cache key value =
@@ -128,36 +161,48 @@ module Cache = struct
     in
     match cache with
     | Empty -> assert false
-    | Array cells ->
-      let cells = ensure_capacity cells key in
+    | Array storage ->
+      let cells = ensure_cell_capacity storage key in
+      begin
+        match cells.(key) with
+        | Some _ -> ()
+        | None ->
+          ensure_touched_capacity storage;
+          storage.touched.(storage.touched_count) <- key;
+          storage.touched_count <- storage.touched_count + 1
+      end;
       cells.(key) <- Some value;
       cache
+
+  let iter_present f = function
+    | Empty -> ()
+    | Array storage ->
+      for index = 0 to storage.touched_count - 1 do
+        let key = storage.touched.(index) in
+        match storage.cells.(key) with
+        | Some value -> f key value
+        | None -> assert false
+      done
 
   let merge cache1 cache2 =
     let length = function
       | Empty -> 0
-      | Array cells -> Array.length !cells
+      | Array storage -> Array.length storage.cells
     in
-    let capacity = max initial_capacity (max (length cache1) (length cache2)) in
-    let merged = Array.make capacity None in
-    begin
-      match cache2 with
-      | Empty -> ()
-      | Array cells ->
-        let cells = !cells in
-        Array.blit cells 0 merged 0 (Array.length cells)
-    end;
-    begin
-      match cache1 with
-      | Empty -> ()
-      | Array cells ->
-        Array.iteri
-          (fun key -> function
-             | Some value -> merged.(key) <- Some value
-             | None -> ())
-          !cells
-    end;
-    Array (ref merged)
+    let count = function
+      | Empty -> 0
+      | Array storage -> storage.touched_count
+    in
+    let cell_capacity =
+      max initial_capacity (max (length cache1) (length cache2))
+    in
+    let touched_capacity =
+      max initial_capacity (count cache1 + count cache2)
+    in
+    let merged = create_with_capacities cell_capacity touched_capacity in
+    iter_present (fun key value -> bind merged key value |> ignore) cache2;
+    iter_present (fun key value -> bind merged key value |> ignore) cache1;
+    merged
 end
 
 module Smm_pre2 = struct
@@ -765,11 +810,41 @@ module Smm = struct
     trace: the trace produced by the current traversal
     change_trace: the change trace we are building & using to provide additional change information on the fly
   *)
+  type function_trace_state = {
+    value_traces : trace array;
+    change_trace : change_trace;
+    mutable previous_trace : int;
+    mutable has_previous_trace : bool;
+  }
+
   type eval_state = {
-    function_traces : (fid, trace) Hashtbl.t;
+    function_traces : (fid, function_trace_state) Hashtbl.t;
     mutable active_trace : trace option;
     debug : bool;
   }
+
+  let create_function_trace_state () =
+    {
+      value_traces = [| Cache.create (); Cache.create () |];
+      change_trace = Cache.create ();
+      previous_trace = 0;
+      has_previous_trace = false;
+    }
+
+  let function_previous_trace state fid =
+    match Hashtbl.find_opt state.function_traces fid with
+    | Some traces when traces.has_previous_trace ->
+      Some traces.value_traces.(traces.previous_trace)
+    | Some _ | None -> None
+
+  let reset_function_trace state fid =
+    match Hashtbl.find_opt state.function_traces fid with
+    | None -> ()
+    | Some traces ->
+      Array.iter Cache.clear traces.value_traces;
+      Cache.clear traces.change_trace;
+      traces.previous_trace <- 0;
+      traces.has_previous_trace <- false
 
   let rec eval_with_state state (mem: memory) (env: env) (ptrace: trace) (trace: trace) (cenv: change_env) (ctrace: change_trace) (e: exp): (value * memory * trace * change_trace) =
     let (eid, change_fn, e') = e in
@@ -874,10 +949,18 @@ module Smm = struct
         (* so early return is enough. *)
         let (fid, params, body, env') = Env.lookup env f |> entry_function in
         let (_, (_, _, _, cenv')) = Env.lookup cenv f |> cent_function in
-        let fn_ptrace =
+        let function_trace =
           match Hashtbl.find_opt state.function_traces fid with
-          | Some trace -> trace
-          | None -> emptyTrace
+          | Some traces -> traces
+          | None ->
+            let traces = create_function_trace_state () in
+            Hashtbl.add state.function_traces fid traces;
+            traces
+        in
+        let fn_ptrace =
+          if function_trace.has_previous_trace then
+            function_trace.value_traces.(function_trace.previous_trace)
+          else emptyTrace
         in
         let arguments = List.combine ids params in
         (* Compute change for each argument *)
@@ -899,7 +982,6 @@ module Smm = struct
         end in
         let changes = List.map aux''' arguments in
         let changes' = List.combine params changes in
-        let fresh_trace = List.fold_left aux'''' (Cache.create ()) arguments in
         let cenv'' =
           List.fold_left
             (fun cenv ((_, param), change) ->
@@ -919,6 +1001,15 @@ module Smm = struct
             | exception Invalid_argument _ -> raise (Error "TypeError: wrong number of arguments")
             end
         in
+        let current_trace_index =
+          if function_trace.has_previous_trace then
+            1 - function_trace.previous_trace
+          else 0
+        in
+        let fresh_trace = function_trace.value_traces.(current_trace_index) in
+        Cache.clear fresh_trace;
+        List.fold_left aux'''' fresh_trace arguments |> ignore;
+        Cache.clear function_trace.change_trace;
         let caller_trace = state.active_trace in
         let ((v, mem', _, _), completed_trace) =
           Fun.protect
@@ -927,7 +1018,8 @@ module Smm = struct
               state.active_trace <- Some fresh_trace;
               let result =
                 eval_with_state
-                  state mem env'' fn_ptrace fresh_trace cenv'' (Cache.create ()) body
+                  state mem env'' fn_ptrace fresh_trace cenv''
+                  function_trace.change_trace body
               in
               let completed_trace =
                 match state.active_trace with
@@ -936,8 +1028,11 @@ module Smm = struct
               in
               (result, completed_trace))
         in
-        Hashtbl.replace state.function_traces fid completed_trace;
-        aux'' v mem' trace ctrace
+        if completed_trace != fresh_trace then assert false;
+        let result = aux'' v mem' trace ctrace in
+        function_trace.previous_trace <- current_trace_index;
+        function_trace.has_previous_trace <- true;
+        result
       | LET (x, e1, e2) ->
         let (v1, mem1, trace1, ctrace1) = eval_with_state state mem env ptrace trace cenv ctrace e1 in
         (* LET is also a point of change propagation.*)
@@ -987,7 +1082,7 @@ module Smm = struct
         (* 왜 cenv maintain하는 코드가 둘 다에서 있는 것 같지? *)
         (* A dynamically created closure must not reuse a trace collected by
            an older activation of the same static function definition. *)
-        Hashtbl.remove state.function_traces fid;
+        reset_function_trace state fid;
         let env' = Env.bind env f (Function (fid, params, body, env)) in
         let body_fvs = free_vars (List.map snd params) body in
         let aux change id = begin

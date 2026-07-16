@@ -25,6 +25,10 @@ let expect_invalid_key name operation =
          name
          (Printexc.to_string exn))
 
+let storage name = function
+  | Cache.Array storage -> storage
+  | Cache.Empty -> failwith (name ^ ": expected allocated storage")
+
 let test_empty_isolation () =
   let first = Cache.bind Cache.empty 0 1 in
   expect_lookup "bound empty" (Some 1) first 0;
@@ -50,7 +54,10 @@ let test_bind_replaces_in_place () =
   Cache.bind cache 0 1 |> ignore;
   Cache.bind cache 0 2 |> ignore;
   expect_lookup "replacement through original" (Some 2) cache 0;
-  expect_lookup "replacement through alias" (Some 2) alias 0
+  expect_lookup "replacement through alias" (Some 2) alias 0;
+  let storage = storage "replacement storage" cache in
+  if storage.touched_count <> 1 then
+    failwith "replacement recorded a duplicate touched index"
 
 let test_growth_preserves_shared_storage () =
   let cache = Cache.create () in
@@ -104,6 +111,53 @@ let test_merge_with_empty () =
   expect_lookup "merge both empty is mutable" (Some 3) both_empty 1;
   expect_lookup "merge both empty leaves sentinel isolated" None Cache.empty 1
 
+let test_clear_is_visible_through_aliases () =
+  let cache = Cache.create () in
+  let alias = cache in
+  Cache.bind cache 1 10 |> ignore;
+  Cache.bind cache 31 20 |> ignore;
+  Cache.clear alias;
+  expect_lookup "cleared first value" None cache 1;
+  expect_lookup "cleared grown value" None cache 31;
+  let storage = storage "cleared alias storage" cache in
+  if storage.touched_count <> 0 then
+    failwith "clear did not reset the touched count";
+  Cache.bind alias 1 30 |> ignore;
+  expect_lookup "rebound value through alias" (Some 30) cache 1
+
+let test_clear_reuses_backing_arrays () =
+  let cache = Cache.create () in
+  for key = 0 to 32 do
+    Cache.bind cache key key |> ignore
+  done;
+  let storage = storage "reused storage" cache in
+  let cells = storage.cells in
+  let touched = storage.touched in
+  Cache.clear cache;
+  if storage.cells != cells then
+    failwith "clear replaced the value backing array";
+  if storage.touched != touched then
+    failwith "clear replaced the touched-index backing array";
+  Cache.bind cache 32 99 |> ignore;
+  if storage.cells != cells || storage.touched != touched then
+    failwith "rebinding within retained capacity allocated a new backing array";
+  expect_lookup "reused backing array value" (Some 99) cache 32
+
+let test_clear_merged_cache () =
+  let cache1 = Cache.create () in
+  let cache2 = Cache.create () in
+  Cache.bind cache1 2 10 |> ignore;
+  Cache.bind cache2 3 20 |> ignore;
+  Cache.bind cache2 2 30 |> ignore;
+  let merged = Cache.merge cache1 cache2 in
+  Cache.clear merged;
+  expect_lookup "cleared merged cache1 key" None merged 2;
+  expect_lookup "cleared merged cache2 key" None merged 3;
+  expect_lookup "source1 survives merged clear" (Some 10) cache1 2;
+  expect_lookup "source2 survives merged clear" (Some 20) cache2 3;
+  Cache.bind merged 3 40 |> ignore;
+  expect_lookup "rebound merged key" (Some 40) merged 3
+
 let test_negative_keys_are_rejected () =
   expect_invalid_key
     "negative lookup"
@@ -119,4 +173,7 @@ let () =
   test_growth_preserves_shared_storage ();
   test_merge_precedence_and_non_aliasing ();
   test_merge_with_empty ();
+  test_clear_is_visible_through_aliases ();
+  test_clear_reuses_backing_arrays ();
+  test_clear_merged_cache ();
   test_negative_keys_are_rejected ()
