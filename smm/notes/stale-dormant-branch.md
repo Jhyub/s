@@ -63,8 +63,12 @@ That containment is exactly what makes the fix below sufficient.
 
 ### 1. Range invalidation of the re-taken branch (recommended)
 
-`from_pre2` assigns eids in **preorder** (`new_eid ()` before recursing), so
-every subtree's eids form a contiguous range `[lo, hi]`.
+`from_pre2` assigns expression eids in **preorder**, independently for the
+root and for each function body. Within one fid's evaluation domain, every
+subtree's expression eids form a contiguous range `[lo, hi]`. A nested
+`LETFN` body belongs to its own fid and does not advance the enclosing
+domain's counter; parameter slots are allocated after the body's expression
+range.
 
 At an IF node, the condition is evaluated on every pass, so its `ptrace` entry
 is always exactly one run old. Compare it with the current condition value:
@@ -72,9 +76,10 @@ is always exactly one run old. Compare it with the current condition value:
 - **Previous cond = current cond** — the branch about to be evaluated was also
   taken last run; its entries are one run old and trustworthy. No action.
 - **Previous cond ≠ current cond** (or absent) — the branch about to be
-  evaluated was dormant last run; every `Eid` entry in its range is at least
-  two runs old. Evaluate it with a `ptrace` that masks that range. The
-  function-encoded `Cache` makes this an O(1) wrapper, e.g.:
+  evaluated was dormant last run; every expression entry in its range is at
+  least two runs old. Evaluate it with a `ptrace` that masks that range in the
+  active fid's trace. The function-encoded `Cache` makes this an O(1) wrapper,
+  e.g.:
 
   ```ocaml
   let mask_range lo hi (C f) =
@@ -83,14 +88,15 @@ is always exactly one run old. Compare it with the current condition value:
        | k -> f k)
   ```
 
-  Only `Eid` keys in the range are masked; `FnArg` entries are always fresh
-  and must pass through.
+  Parameter slots lie after the domain's expression range, and nested
+  function bodies use separate traces, so neither is masked by a branch
+  range.
 
-The branch ranges are static. With preorder numbering, `e2`'s range is
-`[eid e2, eid e3 - 1]`; `e3`'s range is `[eid e3, max_eid e3]`, where
-`max_eid` is the largest eid in the subtree — either computed by a small
-traversal or, cheaper, recorded on each node during `from_pre2` (the counter
-value after recursing into the node).
+The branch ranges are static within their fid. With preorder numbering,
+`e2`'s range is `[eid e2, eid e3 - 1]`; `e3`'s range is
+`[eid e3, max_eid e3]`, where `max_eid` is the largest same-domain eid in the
+subtree. A traversal computing it must skip nested `LETFN` bodies, or it can
+be recorded directly from the active domain counter during `from_pre2`.
 
 Cost model: masking only triggers when the condition actually flips, and it
 disables reuse only inside the re-taken branch for that one pass — the branch

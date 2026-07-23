@@ -147,30 +147,6 @@ let duplicate_numeric_formal_call =
               Pre2.VAR "x",
               Pre2.CALL ("last", [ "one"; "two" ]) ) ) )
 
-let rec annotated_ids ((eid, body) : Pre.exp) =
-  eid
-  :: (match body with
-      | Pre.NUM _ | Pre.TRUE | Pre.FALSE | Pre.VAR _ | Pre.CALL _ -> []
-      | Pre.ADD (left, right)
-      | Pre.SUB (left, right)
-      | Pre.MUL (left, right)
-      | Pre.DIV (left, right)
-      | Pre.MOD (left, right)
-      | Pre.EQUAL (left, right)
-      | Pre.LESS (left, right) ->
-        annotated_ids left @ annotated_ids right
-      | Pre.NOT body -> annotated_ids body
-      | Pre.IF (condition, if_true, if_false) ->
-        annotated_ids condition
-        @ annotated_ids if_true
-        @ annotated_ids if_false
-      | Pre.LET (_, value, body) ->
-        annotated_ids value @ annotated_ids body
-      | Pre.LETFN (_, _, params, function_body, body) ->
-        List.map fst params
-        @ annotated_ids function_body
-        @ annotated_ids body)
-
 let expect_argument_trace name expected trace eid =
   match Cache.lookup trace eid with
   | Some (Pre.Num actual) when actual = expected -> ()
@@ -240,24 +216,42 @@ let cache_storage name = function
   | Cache.Array storage -> storage
   | Cache.Empty -> failwith (name ^ ": expected allocated cache storage")
 
+let sorted_change_eids change_fns =
+  Hashtbl.fold
+    (fun eid _ eids -> eid :: eids)
+    change_fns
+    []
+  |> List.sort Int.compare
+
+let expect_dense_change_domain fid (_, change_fns) =
+  let actual = sorted_change_eids change_fns in
+  let expected = List.init (List.length actual) Fun.id in
+  if actual <> expected then
+    failwith
+      (Printf.sprintf
+         "fid %d expression eids are not dense from zero"
+         fid)
+
 let test_parameter_eids_and_argument_trace () =
   let annotated = Pre.from_pre2 duplicate_numeric_formal_call in
-  let ids = annotated_ids annotated |> List.sort Int.compare in
-  let expected_ids = List.init (List.length ids) Fun.id in
-  if ids <> expected_ids then
-    failwith "expression and parameter eids are not unique and dense";
-  let letfn_eid, fid, params, function_body_eid =
+  let change_fn_tables = Pre.compile_change_fns annotated in
+  Hashtbl.iter expect_dense_change_domain change_fn_tables;
+  let fid, params, function_body_eid =
     match annotated with
     | _, Pre.LET
         (_, _,
           (_, Pre.LET
             (_, _,
-              (letfn_eid,
+              (_,
                 Pre.LETFN
                   (fid, _, params, (function_body_eid, _), _))))) ->
-      (letfn_eid, fid, params, function_body_eid)
+      (fid, params, function_body_eid)
     | _ -> failwith "unexpected annotated duplicate-formal program shape"
   in
+  let (_, function_change_fns) =
+    Hashtbl.find change_fn_tables fid
+  in
+  let parameter_start = Hashtbl.length function_change_fns in
   let first_eid, second_eid =
     match params with
     | [ (first_eid, "x"); (second_eid, "x") ]
@@ -265,10 +259,10 @@ let test_parameter_eids_and_argument_trace () =
       (first_eid, second_eid)
     | _ -> failwith "duplicate formal occurrences do not have distinct eids"
   in
-  if first_eid <> letfn_eid + 1
+  if function_body_eid <> Pre.root_eid
+     || first_eid <> parameter_start
      || second_eid <> first_eid + 1
-     || function_body_eid <> second_eid + 1
-  then failwith "function parameter and body eids are not preorder-local";
+  then failwith "function-local expression and parameter eids are invalid";
   Pre.run annotated
   |> expect_num_value "duplicate numeric formals" "Smm_pre.run" 2;
   let state : Optimized.eval_state =
