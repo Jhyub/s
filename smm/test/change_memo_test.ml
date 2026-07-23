@@ -108,21 +108,17 @@ let test_fresh_activation_traces () =
   expect_cached "first activation" Pre.Same first_trace eid;
   expect_cached "second activation" Pre.Diff second_trace eid
 
-let sorted_keys table =
-  Hashtbl.fold (fun key _ keys -> key :: keys) table []
-  |> List.sort Int.compare
-
 let expect_domain domains fid expected_params expected_eids =
-  match Hashtbl.find_opt domains fid with
-  | None ->
+  if fid < 0 || fid >= Array.length domains then
     failwith (Printf.sprintf "missing change-function domain fid %d" fid)
-  | Some (params, change_fns) ->
+  else
+    let (params, change_fns) = domains.(fid) in
     if params <> expected_params then
       failwith
         (Printf.sprintf
            "fid %d has unexpected parameters"
            fid);
-    let actual_eids = sorted_keys change_fns in
+    let actual_eids = List.init (Array.length change_fns) Fun.id in
     if actual_eids <> expected_eids then
       failwith
         (Printf.sprintf
@@ -156,10 +152,10 @@ let test_function_change_separation () =
   expect_domain domains Pre.root_fid [] [ 0; 1 ];
   expect_domain domains 1 [] [ 0 ];
   let (_, root_change_fns) =
-    Hashtbl.find domains Pre.root_fid
+    domains.(Pre.root_fid)
   in
   let root_change =
-    Hashtbl.find root_change_fns Pre.root_eid
+    root_change_fns.(Pre.root_eid)
   in
   let captured_diff =
     Env.bind Pre.emptyChangeEnv "captured" Pre.Diff
@@ -167,9 +163,9 @@ let test_function_change_separation () =
   root_change
     (Pre.emptyTrace, captured_diff, Cache.create ())
   |> expect_change "function binding change" Pre.Diff;
-  let (_, body_change_fns) = Hashtbl.find domains 1 in
+  let (_, body_change_fns) = domains.(1) in
   let body_change =
-    Hashtbl.find body_change_fns Pre.root_eid
+    body_change_fns.(Pre.root_eid)
   in
   let captured_same =
     Env.bind Pre.emptyChangeEnv "captured" Pre.Same
@@ -182,7 +178,7 @@ let test_change_fn_domains () =
   let check () =
     let annotated = Pre.from_pre2 domain_fixture in
     let domains = Pre.compile_change_fns annotated in
-    if Hashtbl.length domains <> 4 then
+    if Array.length domains <> 4 then
       failwith "expected root and three function change domains";
     expect_domain
       domains Pre.root_fid []
@@ -194,9 +190,9 @@ let test_change_fn_domains () =
     root_change
       (Pre.emptyTrace, Pre.emptyChangeEnv, Cache.create ())
     |> expect_change "root domain result" Pre.Same;
-    let (_, outer_change_fns) = Hashtbl.find domains 1 in
+    let (_, outer_change_fns) = domains.(1) in
     let outer_change =
-      Hashtbl.find outer_change_fns Pre.root_eid
+      outer_change_fns.(Pre.root_eid)
     in
     let outer_cenv =
       Env.bind Pre.emptyChangeEnv "x" Pre.Diff

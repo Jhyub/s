@@ -7,7 +7,7 @@ authors: ["Janghyub Seo <jhseo@ropas.snu.ac.kr>"]
 homepage: "https://github.com/Jhyub/s"
 bug-reports: "https://github.com/Jhyub/s/issues"
 depends: [
-  "ocaml"
+  "ocaml" {>= "5.2"}
   "dune" {>= "3.21"}
   "menhir"
   "odoc" {with-doc}

@@ -16,6 +16,9 @@
  (name smm)
  (synopsis "S-- interpreter")
  (description "S-- interpreter")
- (depends ocaml dune menhir))
+ (depends
+  (ocaml (>= 5.2))
+  dune
+  menhir))
 
 ; See the complete stanza docs at https://dune.readthedocs.io/en/stable/reference/dune-project/index.html

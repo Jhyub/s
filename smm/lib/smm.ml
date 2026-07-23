@@ -493,13 +493,25 @@ module Smm_pre = struct
       | CALL (f, ids) -> List.fold_left (fun ret id -> if List.mem id exclude then ret else id :: ret) [] (f :: ids)
     end |> keep_unique
     
-  type change_fn_table = (eid, change_fn) Hashtbl.t
+  type change_fn_table = change_fn array
 
   let compile_change_fns
       (e : exp)
-      : (fid, parameter list * change_fn_table) Hashtbl.t =
-    let change_fn_tables = Hashtbl.create 16 in
-    let rec compile change_fns ((eid, e') : exp) =
+      : (parameter list * change_fn_table) array =
+    let change_fn_tables = Dynarray.create () in
+    let uninitialized_change_fn _ =
+      failwith "compile_change_fns: uninitialized change-function slot"
+    in
+    let rec compile_domain fid params (e : exp) =
+      Dynarray.add_last change_fn_tables (params, [||]);
+      let change_fns = Dynarray.create () in
+      let _domain_change = compile change_fns e in
+      let change_fns = Dynarray.to_array change_fns in
+      Dynarray.set change_fn_tables fid (params, change_fns)
+    and compile change_fns ((eid, e') : exp) =
+      (* Eids are assigned in preorder, so reserve this node's slot before
+         recursively compiling its children. *)
+      Dynarray.add_last change_fns uninitialized_change_fn;
       let compute =
         match e' with
         | NUM _ | TRUE | FALSE ->
@@ -623,9 +635,7 @@ module Smm_pre = struct
             change2 (ptrace, cenv', ctrace)
         | LETFN (fid, f, params, body, e1) ->
           let body_fvs = free_vars (List.map snd params) body in
-          let body_change_fns = Hashtbl.create 16 in
-          let _body_change = compile body_change_fns body in
-          Hashtbl.add change_fn_tables fid (params, body_change_fns);
+          compile_domain fid params body;
           let change1 = compile change_fns e1 in
           fun (ptrace, cenv, ctrace) ->
             let combine change id =
@@ -661,16 +671,177 @@ module Smm_pre = struct
           end;
           change
       in
-      Hashtbl.add change_fns eid change_fn;
+      Dynarray.set change_fns eid change_fn;
       change_fn
     in
-    let root_change_fns = Hashtbl.create 16 in
-    let _root_change = compile root_change_fns e in
-    Hashtbl.add change_fn_tables root_fid ([], root_change_fns);
-    change_fn_tables
+    compile_domain root_fid [] e;
+    Dynarray.to_array change_fn_tables
+
+  let eval_change (e : exp) : change_fn =
+    let (_, root_change_fns) =
+      (compile_change_fns e).(root_fid)
+    in
+    root_change_fns.(root_eid)
 
 end
 
+module Smm = struct
+  exception Error of string
+
+  open Smm_pre
+
+  (* eid list: where will the eval function jump, *)
+  (* to expect possible Same from given change_fn? *)
+  (* Initial compare points might have empty eid lists, *)
+  (* but this might be overwritten in save point population progress *)
+  (* ^ does this cause costly change_fn calls? *)
+  type etype = Normal | SavPnt of (change_fn * eid list) | CmpPnt of (change_fn * eid list)
+
+  let savepoint_data = function
+    | Normal -> None
+    | SavPnt x | CmpPnt x -> Some x
+
+  type exp = eid * etype * ebody
+  and ebody =
+    | NUM of int
+    | TRUE
+    | FALSE
+    | VAR of id
+    | ADD of eid * eid
+    | SUB of eid * eid
+    | MUL of eid * eid
+    | DIV of eid * eid
+    | MOD of eid * eid
+    | EQUAL of eid * eid
+    | LESS of eid * eid
+    | NOT of eid
+    | IF of eid * eid * eid (* if-then-else *)
+    | CALL of id * id list
+    | LET of id * eid * eid
+    | LETFN of fid * id * parameter list * eid * eid
+
+  (* fid -> (params, eid -> exp) *)
+  (* fid #0 is the root code (empty params) *)
+  (* eid #0 is the root expression of each function / root code *)
+  type program = (parameter list * (exp array)) array
+  type value = Num of int | Bool of bool (* | Pair of (value * value) *)
+  and memory = value Mem.t
+  and env = (id, entry) Env.t
+  and trace = value Cache.t
+  and entry = Addr of Loc.t | Function of fid * parameter list * exp * env
+
+  let emptyMemory = Mem.empty
+  let emptyEnv = Env.empty
+  let emptyTrace = Cache.empty
+
+  let from_pre (e : Smm_pre.program) : program =
+    let domains = Dynarray.create () in
+    let expression_eid ((eid, _) : Smm_pre.exp) = eid in
+    let rec flatten_domain fid params e =
+      (* Fids are assigned in preorder, so reserve this domain before
+         flattening any nested function domains. *)
+      Dynarray.add_last domains (params, [||]);
+      let expressions = Dynarray.create () in
+      flatten expressions e;
+      let expressions = Dynarray.to_array expressions in
+      Dynarray.set domains fid (params, expressions)
+    and flatten expressions ((eid, e') : Smm_pre.exp) =
+      let append ebody =
+        Dynarray.add_last expressions (eid, Normal, ebody)
+      in
+      match e' with
+      | Smm_pre.NUM n -> append (NUM n)
+      | Smm_pre.TRUE -> append TRUE
+      | Smm_pre.FALSE -> append FALSE
+      | Smm_pre.VAR x -> append (VAR x)
+      | Smm_pre.ADD (e1, e2) ->
+        append (ADD (expression_eid e1, expression_eid e2));
+        flatten expressions e1;
+        flatten expressions e2
+      | Smm_pre.SUB (e1, e2) ->
+        append (SUB (expression_eid e1, expression_eid e2));
+        flatten expressions e1;
+        flatten expressions e2
+      | Smm_pre.MUL (e1, e2) ->
+        append (MUL (expression_eid e1, expression_eid e2));
+        flatten expressions e1;
+        flatten expressions e2
+      | Smm_pre.DIV (e1, e2) ->
+        append (DIV (expression_eid e1, expression_eid e2));
+        flatten expressions e1;
+        flatten expressions e2
+      | Smm_pre.MOD (e1, e2) ->
+        append (MOD (expression_eid e1, expression_eid e2));
+        flatten expressions e1;
+        flatten expressions e2
+      | Smm_pre.EQUAL (e1, e2) ->
+        append (EQUAL (expression_eid e1, expression_eid e2));
+        flatten expressions e1;
+        flatten expressions e2
+      | Smm_pre.LESS (e1, e2) ->
+        append (LESS (expression_eid e1, expression_eid e2));
+        flatten expressions e1;
+        flatten expressions e2
+      | Smm_pre.NOT e ->
+        append (NOT (expression_eid e));
+        flatten expressions e
+      | Smm_pre.IF (e1, e2, e3) ->
+        append
+          (IF
+             ( expression_eid e1,
+               expression_eid e2,
+               expression_eid e3 ));
+        flatten expressions e1;
+        flatten expressions e2;
+        flatten expressions e3
+      | Smm_pre.CALL (f, ids) -> append (CALL (f, ids))
+      | Smm_pre.LET (x, e1, e2) ->
+        append (LET (x, expression_eid e1, expression_eid e2));
+        flatten expressions e1;
+        flatten expressions e2
+      | Smm_pre.LETFN (fid, f, params, body, e1) ->
+        append
+          (LETFN
+             ( fid,
+               f,
+               params,
+               expression_eid body,
+               expression_eid e1 ));
+        flatten_domain fid params body;
+        flatten expressions e1
+    in
+    flatten_domain root_fid [] e;
+    Dynarray.to_array domains
+
+  let value_int v =
+    match v with Num n -> n | _ -> raise (Error "TypeError : not int")
+
+  let value_bool v =
+    match v with Bool b -> b | _ -> raise (Error "TypeError: not bool")
+
+  let entry_addr entry =
+    match entry with Addr l -> l | Function _ -> raise (Error "TypeError: not a value")
+
+  let entry_function entry =
+    match entry with
+    | Function (fid, params, body, cenv) -> (fid, params, body, cenv)
+    | Addr _ -> raise (Error "TypeError: not a function")
+
+  let validate_call_argument = function
+    | Addr _ -> ()
+    | Function _ ->
+      raise (Error "TypeError: function arguments are not supported")
+
+  let eq v1 v2 =
+    match v1, v2 with
+    | Num n1, Num n2 -> n1 = n2
+    | Bool b1, Bool b2 -> b1 = b2
+    | _ -> false
+
+end
+
+
+(*
 module Smm = struct
   exception Error of string
 
@@ -1131,3 +1302,4 @@ module Smm = struct
 
 
 end
+*)

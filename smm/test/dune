@@ -20,6 +20,10 @@
  (name change_memo_test)
  (libraries smm_))
 
+(test
+ (name from_pre_test)
+ (libraries smm_))
+
 (executable
  (name debug_mode)
  (libraries smm_))

@@ -216,26 +216,9 @@ let cache_storage name = function
   | Cache.Array storage -> storage
   | Cache.Empty -> failwith (name ^ ": expected allocated cache storage")
 
-let sorted_change_eids change_fns =
-  Hashtbl.fold
-    (fun eid _ eids -> eid :: eids)
-    change_fns
-    []
-  |> List.sort Int.compare
-
-let expect_dense_change_domain fid (_, change_fns) =
-  let actual = sorted_change_eids change_fns in
-  let expected = List.init (List.length actual) Fun.id in
-  if actual <> expected then
-    failwith
-      (Printf.sprintf
-         "fid %d expression eids are not dense from zero"
-         fid)
-
 let test_parameter_eids_and_argument_trace () =
   let annotated = Pre.from_pre2 duplicate_numeric_formal_call in
   let change_fn_tables = Pre.compile_change_fns annotated in
-  Hashtbl.iter expect_dense_change_domain change_fn_tables;
   let fid, params, function_body_eid =
     match annotated with
     | _, Pre.LET
@@ -249,9 +232,9 @@ let test_parameter_eids_and_argument_trace () =
     | _ -> failwith "unexpected annotated duplicate-formal program shape"
   in
   let (_, function_change_fns) =
-    Hashtbl.find change_fn_tables fid
+    change_fn_tables.(fid)
   in
-  let parameter_start = Hashtbl.length function_change_fns in
+  let parameter_start = Array.length function_change_fns in
   let first_eid, second_eid =
     match params with
     | [ (first_eid, "x"); (second_eid, "x") ]
