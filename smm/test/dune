@@ -17,7 +17,7 @@
  (libraries smm_))
 
 (test
- (name change_memo_test)
+ (name change_cond_test)
  (libraries smm_))
 
 (test

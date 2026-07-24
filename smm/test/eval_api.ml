@@ -218,7 +218,7 @@ let cache_storage name = function
 
 let test_parameter_eids_and_argument_trace () =
   let annotated = Pre.from_pre2 duplicate_numeric_formal_call in
-  let change_fn_tables = Pre.compile_change_fns annotated in
+  let change_cond_tables = Pre.compile_change_conds annotated in
   let fid, params, function_body_eid =
     match annotated with
     | _, Pre.LET
@@ -231,10 +231,10 @@ let test_parameter_eids_and_argument_trace () =
       (fid, params, function_body_eid)
     | _ -> failwith "unexpected annotated duplicate-formal program shape"
   in
-  let (_, function_change_fns) =
-    change_fn_tables.(fid)
+  let (_, function_change_conds) =
+    change_cond_tables.(fid)
   in
-  let parameter_start = Array.length function_change_fns in
+  let parameter_start = Array.length function_change_conds in
   let first_eid, second_eid =
     match params with
     | [ (first_eid, "x"); (second_eid, "x") ]

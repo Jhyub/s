@@ -465,7 +465,19 @@ module Smm_pre = struct
   type change = Same | Diff | Unknown
   type change_env = (id, change) Env.t
   type change_trace = change Cache.t
-  type change_fn = (trace * change_env * change_trace) -> change
+  type cond =
+    | Atom of atom
+    | And of cond * cond
+    | Or of cond * cond
+    | Not of cond
+    | Always
+    | Impossible
+  and atom =
+    | CngIs of (eid * change)
+    | CEnvIs of (id * change)
+    | ValIs of (eid * value)
+  type change_cond = (cond * cond) (* each condition for change being Same & Diff *)
+  type change_fn = change_cond
 
   let emptyChangeEnv = Env.empty
 
@@ -493,195 +505,143 @@ module Smm_pre = struct
       | CALL (f, ids) -> List.fold_left (fun ret id -> if List.mem id exclude then ret else id :: ret) [] (f :: ids)
     end |> keep_unique
     
-  type change_fn_table = change_fn array
+  type change_cond_table = change_cond array
 
-  let compile_change_fns
+  let compile_change_conds
       (e : exp)
-      : (parameter list * change_fn_table) array =
-    let change_fn_tables = Dynarray.create () in
-    let uninitialized_change_fn _ =
-      failwith "compile_change_fns: uninitialized change-function slot"
+      : (parameter list * change_cond_table) array =
+    let change_cond_tables = Dynarray.create () in
+    let change_is ((eid, _) : exp) change =
+      Atom (CngIs (eid, change))
+    in
+    let cenv_is id change =
+      Atom (CEnvIs (id, change))
+    in
+    let value_is eid value =
+      Atom (ValIs (eid, value))
+    in
+    let all = function
+      | [] -> Always
+      | condition :: conditions ->
+        List.fold_left
+          (fun conjunction condition -> And (conjunction, condition))
+          condition
+          conditions
+    in
+    let any = function
+      | [] -> Impossible
+      | condition :: conditions ->
+        List.fold_left
+          (fun disjunction condition -> Or (disjunction, condition))
+          condition
+          conditions
+    in
+    let one_changed e1 e2 =
+      any
+        [ all [ change_is e1 Same; change_is e2 Diff ];
+          all [ change_is e1 Diff; change_is e2 Same ] ]
     in
     let rec compile_domain fid params (e : exp) =
-      Dynarray.add_last change_fn_tables (params, [||]);
-      let change_fns = Dynarray.create () in
-      let _domain_change = compile change_fns e in
-      let change_fns = Dynarray.to_array change_fns in
-      Dynarray.set change_fn_tables fid (params, change_fns)
-    and compile change_fns ((eid, e') : exp) =
-      (* Eids are assigned in preorder, so reserve this node's slot before
-         recursively compiling its children. *)
-      Dynarray.add_last change_fns uninitialized_change_fn;
-      let compute =
+      (* Fids are assigned in preorder, so reserve this domain before
+         compiling any nested function domains. *)
+      Dynarray.add_last change_cond_tables (params, [||]);
+      let change_conds = Dynarray.create () in
+      compile change_conds e;
+      Dynarray.set
+        change_cond_tables
+        fid
+        (params, Dynarray.to_array change_conds)
+    and compile change_conds ((eid, e') : exp) =
+      let change_cond =
         match e' with
         | NUM _ | TRUE | FALSE ->
-          fun _ -> Same
+          (Always, Impossible)
         | VAR x ->
-          fun (_, cenv, _) -> Env.lookup cenv x
+          (cenv_is x Same, cenv_is x Diff)
         | ADD (e1, e2) | SUB (e1, e2) ->
-          let change1 = compile change_fns e1 in
-          let change2 = compile change_fns e2 in
-          fun pcc ->
-            let ce1 = change1 pcc in
-            let ce2 = change2 pcc in
-            begin
-              match ce1, ce2 with
-              | Same, Same -> Same
-              | Same, Diff | Diff, Same -> Diff
-              | _, _ -> Unknown
-            end
-        | MUL (e1, e2) ->
-          let change1 = compile change_fns e1 in
-          let change2 = compile change_fns e2 in
-          fun pcc ->
-            let ce1 = change1 pcc in
-            let ce2 = change2 pcc in
-            begin
-              match ce1, ce2 with
-              | Same, Same -> Same
-              | _, _ -> Unknown
-            end
+          ( all [ change_is e1 Same; change_is e2 Same ],
+            one_changed e1 e2 )
+        | MUL (e1, e2) | MOD (e1, e2) | LESS (e1, e2) ->
+          ( all [ change_is e1 Same; change_is e2 Same ],
+            Impossible )
         | DIV (e1, e2) ->
-          let (eid2, _) = e2 in
-          let change1 = compile change_fns e1 in
-          let change2 = compile change_fns e2 in
-          fun ((ptrace, _, _) as pcc) ->
-            let ce1 = change1 pcc in
-            let ce2 = change2 pcc in
-            begin
-              match ce1, ce2 with
-              | Same, Same -> Same
-              | Diff, Same | Unknown, Same ->
-                begin
-                  match Cache.lookup ptrace eid2 with
-                  | Some (Num 1) -> ce1
-                  | _ -> Unknown
-                end
-              | _, _ -> Unknown
-            end
-        | MOD (e1, e2) ->
-          let change1 = compile change_fns e1 in
-          let change2 = compile change_fns e2 in
-          fun pcc ->
-            let ce1 = change1 pcc in
-            let ce2 = change2 pcc in
-            begin
-              match ce1, ce2 with
-              | Same, Same -> Same
-              | _, _ -> Unknown
-            end
+          ( all [ change_is e1 Same; change_is e2 Same ],
+            all
+              [ change_is e1 Diff;
+                change_is e2 Same;
+                value_is (fst e2) (Num 1) ] )
         | EQUAL (e1, e2) ->
-          let change1 = compile change_fns e1 in
-          let change2 = compile change_fns e2 in
-          fun ((ptrace, _, _) as pcc) ->
-            let ce1 = change1 pcc in
-            let ce2 = change2 pcc in
-            begin
-              match ce1, ce2 with
-              | Same, Same -> Same
-              | Same, Diff | Diff, Same ->
-                begin
-                  match Cache.lookup ptrace eid with
-                  | Some (Bool true) -> Diff
-                  | _ -> Unknown
-                end
-              | _, _ -> Unknown
-            end
-        | LESS (e1, e2) ->
-          let change1 = compile change_fns e1 in
-          let change2 = compile change_fns e2 in
-          fun pcc ->
-            let ce1 = change1 pcc in
-            let ce2 = change2 pcc in
-            begin
-              match ce1, ce2 with
-              | Same, Same -> Same
-              | _, _ -> Unknown
-            end
+          ( all [ change_is e1 Same; change_is e2 Same ],
+            all [ one_changed e1 e2; value_is eid (Bool true) ] )
         | NOT e ->
-          let change = compile change_fns e in
-          fun pcc -> change pcc
-        | IF (e1, e2, e3) ->
-          let (eid1, _) = e1 in
-          let change1 = compile change_fns e1 in
-          let change2 = compile change_fns e2 in
-          let change3 = compile change_fns e3 in
-          fun ((ptrace, _, _) as pcc) ->
-            let ce1 = change1 pcc in
-            let ce2 = change2 pcc in
-            let ce3 = change3 pcc in
-            begin
-              match Cache.lookup ptrace eid1 with
-              | None ->
-                begin
-                  match ce1, ce2, ce3 with
-                  | Same, Same, Same -> Same
-                  | _, _, _ -> Unknown
-                end
-              | Some (Bool b) ->
-                begin
-                  match ce1 with
-                  | Same -> if b then ce2 else ce3
-                  | Diff | Unknown -> Unknown
-                end
-              | _ -> Unknown
-            end
-        | LET (x, e1, e2) ->
-          let change1 = compile change_fns e1 in
-          let change2 = compile change_fns e2 in
-          fun (ptrace, cenv, ctrace) ->
-            let ce1 = change1 (ptrace, cenv, ctrace) in
-            let cenv' = Env.bind cenv x ce1 in
-            change2 (ptrace, cenv', ctrace)
-        | LETFN (fid, f, params, body, e1) ->
-          let body_fvs = free_vars (List.map snd params) body in
-          compile_domain fid params body;
-          let change1 = compile change_fns e1 in
-          fun (ptrace, cenv, ctrace) ->
-            let combine change id =
-              let c = Env.lookup cenv id in
-              match change, c with
-              | Same, Same -> Same
-              | _, Diff -> Diff
-              | _, _ -> Unknown
-            in
-            let lit_change = List.fold_left combine Same body_fvs in
-            let cenv' = Env.bind cenv f lit_change in
-            change1 (ptrace, cenv', ctrace)
+          (change_is e Same, change_is e Diff)
+        | IF (condition, if_true, if_false) ->
+          let condition_was_true =
+            value_is (fst condition) (Bool true)
+          in
+          let condition_was_false =
+            value_is (fst condition) (Bool false)
+          in
+          ( any
+              [ all
+                  [ change_is condition Same;
+                    change_is if_true Same;
+                    change_is if_false Same ];
+                all
+                  [ condition_was_true;
+                    change_is condition Same;
+                    change_is if_true Same ];
+                all
+                  [ condition_was_false;
+                    change_is condition Same;
+                    change_is if_false Same ] ],
+            any
+              [ all
+                  [ condition_was_true;
+                    change_is condition Same;
+                    change_is if_true Diff ];
+                all
+                  [ condition_was_false;
+                    change_is condition Same;
+                    change_is if_false Diff ] ] )
+        | LET (_, _, continuation) | LETFN (_, _, _, _, continuation) ->
+          (change_is continuation Same, change_is continuation Diff) (* We handle cenv extension outside *)
         | CALL (f, ids) ->
-          fun (_, cenv, _) ->
-            let combine change id =
-              let c = Env.lookup cenv id in
-              match change, c with
-              | Same, Same -> Same
-              | _, _ -> Unknown
-            in
-            List.fold_left combine Same (f :: ids)
+          (* For those who ask if this is correct, yes it is -
+            the sameness here is defined to the last call at 'this spot',
+            not any other random call to the same function. *)
+          (all (List.map (fun id -> cenv_is id Same) (f :: ids)), 
+           Impossible)
       in
-      (* Previous value trace, change environment, and current change trace. *)
-      let change_fn ((_, _, ctrace) as pcc) =
-        match Cache.lookup ctrace eid with
-        | Some change -> change
-        | None ->
-          let change = compute pcc in
-          begin
-            match change with
-            | Same | Diff -> Cache.bind ctrace eid change |> ignore
-            | Unknown -> ()
-          end;
-          change
-      in
-      Dynarray.set change_fns eid change_fn;
-      change_fn
+      (* Eids are dense and assigned in preorder, so the node condition can be
+         appended before visiting its children. *)
+      Dynarray.add_last change_conds change_cond;
+      match e' with
+      | NUM _ | TRUE | FALSE | VAR _ | CALL _ -> ()
+      | ADD (e1, e2)
+      | SUB (e1, e2)
+      | MUL (e1, e2)
+      | DIV (e1, e2)
+      | MOD (e1, e2)
+      | EQUAL (e1, e2)
+      | LESS (e1, e2) ->
+        compile change_conds e1;
+        compile change_conds e2
+      | NOT e ->
+        compile change_conds e
+      | IF (e1, e2, e3) ->
+        compile change_conds e1;
+        compile change_conds e2;
+        compile change_conds e3
+      | LET (_, e1, e2) ->
+        compile change_conds e1;
+        compile change_conds e2
+      | LETFN (fid, _, params, body, continuation) ->
+        compile_domain fid params body;
+        compile change_conds continuation
     in
     compile_domain root_fid [] e;
-    Dynarray.to_array change_fn_tables
-
-  let eval_change (e : exp) : change_fn =
-    let (_, root_change_fns) =
-      (compile_change_fns e).(root_fid)
-    in
-    root_change_fns.(root_eid)
+    Dynarray.to_array change_cond_tables
 
 end
 
