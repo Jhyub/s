@@ -661,7 +661,9 @@ module Smm = struct
     | Normal -> None
     | SavPnt x | CmpPnt x -> Some x
 
-  type exp = eid * etype * ebody
+  (* (eid, parent_eid, cenv_holder_eid, etype, ebody);
+     each domain root is its own parent. *)
+  type exp = eid * eid * eid * etype * ebody
   and ebody =
     | NUM of int
     | TRUE
@@ -702,13 +704,16 @@ module Smm = struct
          flattening any nested function domains. *)
       Dynarray.add_last domains (params, [||]);
       let expressions = Dynarray.create () in
-      flatten expressions e;
+      flatten expressions root_eid root_eid e;
       let expressions = Dynarray.to_array expressions in
       Dynarray.set domains fid (params, expressions)
-    and flatten expressions ((eid, e') : Smm_pre.exp) =
+    and flatten expressions parent_eid cenv_holder_eid ((eid, e') : Smm_pre.exp) =
       let append ebody =
-        Dynarray.add_last expressions (eid, Normal, ebody)
+        Dynarray.add_last
+          expressions
+          (eid, parent_eid, cenv_holder_eid, Normal, ebody)
       in
+      let cheid = cenv_holder_eid in 
       match e' with
       | Smm_pre.NUM n -> append (NUM n)
       | Smm_pre.TRUE -> append TRUE
@@ -716,49 +721,49 @@ module Smm = struct
       | Smm_pre.VAR x -> append (VAR x)
       | Smm_pre.ADD (e1, e2) ->
         append (ADD (expression_eid e1, expression_eid e2));
-        flatten expressions e1;
-        flatten expressions e2
+        flatten expressions eid cheid e1;
+        flatten expressions eid cheid e2
       | Smm_pre.SUB (e1, e2) ->
         append (SUB (expression_eid e1, expression_eid e2));
-        flatten expressions e1;
-        flatten expressions e2
+        flatten expressions eid cheid e1;
+        flatten expressions eid cheid e2
       | Smm_pre.MUL (e1, e2) ->
         append (MUL (expression_eid e1, expression_eid e2));
-        flatten expressions e1;
-        flatten expressions e2
+        flatten expressions eid cheid e1;
+        flatten expressions eid cheid e2
       | Smm_pre.DIV (e1, e2) ->
         append (DIV (expression_eid e1, expression_eid e2));
-        flatten expressions e1;
-        flatten expressions e2
+        flatten expressions eid cheid e1;
+        flatten expressions eid cheid e2
       | Smm_pre.MOD (e1, e2) ->
         append (MOD (expression_eid e1, expression_eid e2));
-        flatten expressions e1;
-        flatten expressions e2
+        flatten expressions eid cheid e1;
+        flatten expressions eid cheid e2
       | Smm_pre.EQUAL (e1, e2) ->
         append (EQUAL (expression_eid e1, expression_eid e2));
-        flatten expressions e1;
-        flatten expressions e2
+        flatten expressions eid cheid e1;
+        flatten expressions eid cheid e2
       | Smm_pre.LESS (e1, e2) ->
         append (LESS (expression_eid e1, expression_eid e2));
-        flatten expressions e1;
-        flatten expressions e2
+        flatten expressions eid cheid e1;
+        flatten expressions eid cheid e2
       | Smm_pre.NOT e ->
         append (NOT (expression_eid e));
-        flatten expressions e
+        flatten expressions eid cheid e
       | Smm_pre.IF (e1, e2, e3) ->
         append
           (IF
              ( expression_eid e1,
                expression_eid e2,
                expression_eid e3 ));
-        flatten expressions e1;
-        flatten expressions e2;
-        flatten expressions e3
+        flatten expressions eid cheid e1;
+        flatten expressions eid (expression_eid e2) e2;
+        flatten expressions eid (expression_eid e3) e3
       | Smm_pre.CALL (f, ids) -> append (CALL (f, ids))
       | Smm_pre.LET (x, e1, e2) ->
         append (LET (x, expression_eid e1, expression_eid e2));
-        flatten expressions e1;
-        flatten expressions e2
+        flatten expressions eid cheid e1;
+        flatten expressions eid cheid e2
       | Smm_pre.LETFN (fid, f, params, body, e1) ->
         append
           (LETFN
@@ -768,7 +773,7 @@ module Smm = struct
                expression_eid body,
                expression_eid e1 ));
         flatten_domain fid params body;
-        flatten expressions e1
+        flatten expressions eid cheid e1
     in
     flatten_domain root_fid [] e;
     Dynarray.to_array domains
@@ -797,6 +802,48 @@ module Smm = struct
     | Num n1, Num n2 -> n1 = n2
     | Bool b1, Bool b2 -> b1 = b2
     | _ -> false
+
+  type eval_state = {
+    memory: memory;
+    env: env;
+    cenv: change_env; (* Current change environment *)
+    ptraces: trace array;
+    traces: trace array;
+    base_cenvs: (eid, change_env) Hashtbl.t array; (* We need multiple base cenvs to handle if/then/else branches *)
+    ctraces: change_trace array;
+  }
+
+  let chain_change c1 c2 =
+    match c1, c2 with
+    | Same, Same -> Same
+    | Same, Diff | Diff, Same -> Diff
+    | _, _ -> Unknown
+
+  let rec eval (pgm: program) (state: eval_state) (fid: fid) (eid: eid): (value * eval_state) =
+    let (eid, peid, cheid, etype, ebody) = (snd pgm.(fid)).(eid) in
+    let memory = state.memory in
+    let env = state.env in
+    let cenv = state.cenv in
+    let ptrace = state.ptraces.(fid) in
+    let trace = state.traces.(fid) in
+    let base_cenv = state.base_cenvs.(cheid) in
+    let ctrace = state.ctraces.(fid) in
+    raise (Error "Not implemented")
+
+
+  let run (pgm: program) =
+    let fcnt = Array.length pgm in
+    let state = {
+      memory = emptyMemory;
+      env = emptyEnv;
+      cenv = emptyChangeEnv;
+      ptraces = Array.make fcnt emptyTrace;
+      traces = Array.make fcnt emptyTrace;
+      base_cenvs = Array.make fcnt (Hashtbl.create 10);
+      ctraces = Array.make fcnt emptyTrace;
+    } in
+    let v, _ = eval pgm state 0 0 in
+    v
 
 end
 
